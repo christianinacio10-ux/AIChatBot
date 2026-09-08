@@ -173,10 +173,10 @@ const TIPO_ORDEM = {
 
 /**
  * Cobertura MTO de uma linha de backlog (PV+Ln = uma ordem de trabalho).
- * semOrdem: pedido no backlog, OP ainda nao existe neste plano.
+ * semOrdem: pedido no backlog, OT ainda nao existe neste plano.
  * sugerida: motor/Gantt marcou a linha, ainda pode ser reprogramada.
  * naMaquina: congelada (travada ou dentro do horizonte de congelamento).
- * opCriada: LIBERADA — ja foi para o chao / XLSX de criacao de OP.
+ * opCriada: LIBERADA — ja foi para o chao / XLSX de criacao de OT.
  * encerrada: producao finalizada; nao ocupa maquina e nao pode liberar de novo.
  */
 const COBERTURA = {
@@ -185,6 +185,52 @@ const COBERTURA = {
   naMaquina: 'naMaquina',
   opCriada: 'opCriada',
   encerrada: 'encerrada',
+};
+
+/**
+ * Status da OT visto pelo planejador (SAP PP / Oracle Discrete).
+ * CRTD = criada/sugerida; REL = liberada ou ja despachada; TECO = encerrada.
+ */
+const STATUS_OT = {
+  semOt: 'semOt',
+  sugerida: 'sugerida',
+  naMaquina: 'naMaquina',
+  otCriada: 'otCriada',
+  encerrada: 'encerrada',
+};
+
+const STATUS_OT_ERP = {
+  semOt: '',
+  sugerida: 'CRTD',
+  naMaquina: 'REL',
+  otCriada: 'REL',
+  encerrada: 'TECO',
+};
+
+/** Saude do prazo versus data do cliente (Flexibility / Reliability). */
+const ESTADO_PRAZO = {
+  noPrazo: 'noPrazo',
+  risco: 'risco',
+  atrasado: 'atrasado',
+  semPrograma: 'semPrograma',
+  bloqueado: 'bloqueado',
+};
+
+const RESTRICAO = {
+  filaMaquina: 'filaMaquina',
+  congelamento: 'congelamento',
+  campanhaCor: 'campanhaCor',
+  semCapacidade: 'semCapacidade',
+  semOperador: 'semOperador',
+  bloqueadaMp: 'bloqueadaMp',
+  semVelocidade: 'semVelocidade',
+  semMaquina: 'semMaquina',
+  semUnidade: 'semUnidade',
+  cobertaEstoque: 'cobertaEstoque',
+  jaNaMaquina: 'jaCoberta',
+  semPecas: 'semPecas',
+  acimaDaDemanda: 'acimaDaDemanda',
+  gargaloPessoal: 'gargaloPessoal',
 };
 
 const LINHA_PLANO = {
@@ -1823,7 +1869,7 @@ function formatarResumoBacklog_(r) {
     (r.encerradas || 0) + ' encerradas, ' +
     (r.ordensOrfasRemovidas || 0) + ' planejadas orfas removidas, ' +
     (r.ordensFirmesOrfas || 0) + ' firmes sem demanda, ' +
-    (r.ordensEncerradas || 0) + ' OPs encerradas.';
+    (r.ordensEncerradas || 0) + ' OTs encerradas.';
 }
 
 function criarGatilhoBacklog() {
@@ -2004,6 +2050,8 @@ function montarPlano(grupoOuFiltro, hoje) {
       dataPrometida: d.dataPrometida,
       situacao: d.situacao,
       maquinaId: d.maquinaId,
+      maquinaNome: (maqs[d.maquinaId] || {}).nome || item.maquinaNome || '',
+      itemCodigo: d.itemCodigo || item.itemCodigo,
       prioridadeManual: (ajustes[d.chave] || {}).prioridadeManual,
     });
   });
@@ -2014,6 +2062,7 @@ function montarPlano(grupoOuFiltro, hoje) {
   });
 
   const cobertura = {};
+  const firmesPorMaq = {};
 
   ordens.forEach(function (o) {
     if (!ordemNoEscopo_(o, escopo, chavesItem, techs, itensCad, maqs)) return;
@@ -2056,7 +2105,18 @@ function montarPlano(grupoOuFiltro, hoje) {
       if (o.travada) cob.travada = true;
       const cobNova = coberturaOrdem_(o, congelaPlano);
       const rank = { semOrdem: 0, sugerida: 1, naMaquina: 2, opCriada: 3, encerrada: 4 };
-      if ((rank[cobNova] || 0) >= (rank[cob.cobertura] || 0)) cob.cobertura = cobNova;
+      if ((rank[cobNova] || 0) >= (rank[cob.cobertura] || 0)) {
+        cob.cobertura = cobNova;
+        cob.ordemId = o.id;
+        cob.maquinaId = o.maquinaId;
+        cob.sequencia = o.sequencia;
+        cob.inicio = o.inicio ? Util.chaveDia(o.inicio instanceof Date ? o.inicio : Util.paraData(o.inicio)) : '';
+        cob.fim = iso || '';
+      }
+      if (ordemFirme_(o, congelaPlano) && o.maquinaId) {
+        if (!firmesPorMaq[o.maquinaId]) firmesPorMaq[o.maquinaId] = [];
+        firmesPorMaq[o.maquinaId].push(o);
+      }
     }
     if (o.tipo === TIPO_ORDEM.liberada || o.tipo === TIPO_ORDEM.encerrada) {
       item.liberada[idx] = Util.arredondarPecas(item.liberada[idx] + pecas);
@@ -2100,6 +2160,10 @@ function montarPlano(grupoOuFiltro, hoje) {
      */
     item.linhas.forEach(function (l) {
       const cob = cobertura[l.chave] || null;
+      l.maquinaNome = l.maquinaNome || item.maquinaNome ||
+        ((maqs[l.maquinaId] || {}).nome) || '';
+      l.itemCodigo = l.itemCodigo || item.itemCodigo;
+      l.itemDescricao = item.descricao || '';
       l.plano = cob ? {
         pecas: cob.pecas,
         tipo: cob.tipo,
@@ -2109,12 +2173,30 @@ function montarPlano(grupoOuFiltro, hoje) {
         cobertura: cob.cobertura || coberturaOrdem_({
           tipo: cob.tipo, travada: cob.travada, inicio: cob.data,
         }, congelaPlano),
+        inicio: cob.inicio || '',
+        fim: cob.fim || cob.data || '',
+        ordemId: cob.ordemId || '',
+        sequencia: cob.sequencia,
+        maquinaId: cob.maquinaId || l.maquinaId,
       } : null;
       l.cobertura = (l.plano && l.plano.cobertura) || COBERTURA.semOrdem;
+      l.statusOt = statusOtDeCobertura_(l.cobertura);
+      l.statusOtErp = STATUS_OT_ERP[l.statusOt] || '';
+      l.ordemId = (l.plano && l.plano.ordemId) || '';
+      l.inicio = (l.plano && l.plano.inicio) || '';
+      l.fim = (l.plano && l.plano.fim) || '';
+      l.sequencia = (l.plano && l.plano.sequencia != null) ? l.plano.sequencia : null;
+      const temPrograma = !!(l.cobertura && l.cobertura !== COBERTURA.semOrdem && l.fim && !(l.plano && l.plano.semData));
+      l.estadoPrazo = estadoPrazoDatas_(
+        l.fim, l.dataDesejada, l.dataPrometida, l.situacao, temPrograma);
+      l.atrasoDias = diasAtrasoIso_(l.fim, l.dataPrometida || l.dataDesejada);
+      const diag = inferirRestricaoLinha_(l, cob, firmesPorMaq[l.maquinaId || (l.plano && l.plano.maquinaId)] || [], congelaPlano);
+      l.restricao = diag.codigo;
+      l.restricaoTexto = diag.texto;
       l.faltaPlano = Util.arredondarPecas(Math.max(0, (l.pecas || 0) - (cob ? cob.pecas : 0)));
       if (l.faltaPlano > 0) item.linhasSemPlano += 1;
     });
-    item.linhas.sort(compararDemandaPlano_);
+    item.linhas.sort(compararPedidoProducao_);
     return item;
   }).sort(function (a, b) {
     return String(a.maquinaNome || '').localeCompare(String(b.maquinaNome || '')) ||
@@ -2130,6 +2212,12 @@ function montarPlano(grupoOuFiltro, hoje) {
   let linhasNaMaquina = 0;
   let linhasOpCriada = 0;
   let linhasEncerradas = 0;
+  let linhasAtrasadas = 0;
+  let linhasRisco = 0;
+  let linhasNoPrazo = 0;
+  let linhasSemPrograma = 0;
+  let linhasBloqueadas = 0;
+  const pedidos = [];
   itens.forEach(function (it) {
     pecasDemanda += it.totalDemanda;
     pecasSemPlano += Math.max(0, it.semPlano);
@@ -2141,11 +2229,18 @@ function montarPlano(grupoOuFiltro, hoje) {
       else if (l.cobertura === COBERTURA.naMaquina) linhasNaMaquina++;
       else if (l.cobertura === COBERTURA.sugerida) linhasSugeridas++;
       else linhasSemOrdem++;
+      if (l.estadoPrazo === ESTADO_PRAZO.atrasado) linhasAtrasadas++;
+      else if (l.estadoPrazo === ESTADO_PRAZO.risco) linhasRisco++;
+      else if (l.estadoPrazo === ESTADO_PRAZO.bloqueado) linhasBloqueadas++;
+      else if (l.estadoPrazo === ESTADO_PRAZO.semPrograma) linhasSemPrograma++;
+      else if (l.estadoPrazo === ESTADO_PRAZO.noPrazo) linhasNoPrazo++;
+      pedidos.push(l);
     });
   });
+  pedidos.sort(compararPedidoProducao_);
+  pedidos.forEach(function (l, i) { l.seqProducao = i + 1; });
 
-  let linhasDemanda = 0;
-  itens.forEach(function (it) { linhasDemanda += (it.linhas || []).length; });
+  let linhasDemanda = pedidos.length;
 
   return {
     geradoEm: Util.formatarISO(hoje instanceof Date ? hoje : new Date()),
@@ -2154,6 +2249,7 @@ function montarPlano(grupoOuFiltro, hoje) {
     navegacao: navegacao,
     horizonte: horizonte,
     itens: itens,
+    pedidos: pedidos,
     otimizacao: politicaOtimizacao_(Cadastros.config(), hoje || new Date()).painel,
     congelamento: congelaPlano.painel,
     resumo: {
@@ -2168,6 +2264,11 @@ function montarPlano(grupoOuFiltro, hoje) {
       linhasNaMaquina: linhasNaMaquina,
       linhasOpCriada: linhasOpCriada,
       linhasEncerradas: linhasEncerradas,
+      linhasAtrasadas: linhasAtrasadas,
+      linhasRisco: linhasRisco,
+      linhasNoPrazo: linhasNoPrazo,
+      linhasSemPrograma: linhasSemPrograma,
+      linhasBloqueadas: linhasBloqueadas,
     },
   };
 }
@@ -2442,7 +2543,7 @@ function aplicarPlanejado_(payload, hoje) {
 
 function ordemManual_(d, bucket, hoje) {
   return {
-    id: Util.gerarId('OP'),
+    id: Util.gerarId('OT'),
     chave_demanda: d.chave,
     item_codigo: d.itemCodigo,
     maquina_id: d.maquinaId,
@@ -2555,7 +2656,7 @@ function politicaCongelamento_(config, hoje) {
 
 /**
  * Ordem firme: ja esta na maquina. O motor ocupa o slot e nao a substitui.
- * LIBERADA = OP criada (ainda em producao). Travada = congelada na mao.
+ * LIBERADA = OT criada (ainda em producao). Travada = congelada na mao.
  * Inicio dentro de congelar_dias = carregada no horizonte curto.
  * ENCERRADA nao e firme: ja saiu da maquina.
  */
@@ -2574,7 +2675,7 @@ function ordemFirme_(o, congela) {
 }
 
 /**
- * MTO: uma PV+Ln so pode ter uma OP. Encerrada, liberada ou firme cobrem
+ * MTO: uma PV+Ln so pode ter uma OT. Encerrada, liberada ou firme cobrem
  * a chave e impedem o motor de criar outra.
  */
 function ordemCobreDemanda_(o, congela) {
@@ -2589,6 +2690,150 @@ function coberturaOrdem_(o, congela) {
   if (o.tipo === TIPO_ORDEM.liberada) return COBERTURA.opCriada;
   if (ordemFirme_(o, congela)) return COBERTURA.naMaquina;
   return COBERTURA.sugerida;
+}
+
+function statusOtDeCobertura_(cob) {
+  if (cob === COBERTURA.encerrada) return STATUS_OT.encerrada;
+  if (cob === COBERTURA.opCriada) return STATUS_OT.otCriada;
+  if (cob === COBERTURA.naMaquina) return STATUS_OT.naMaquina;
+  if (cob === COBERTURA.sugerida) return STATUS_OT.sugerida;
+  return STATUS_OT.semOt;
+}
+
+function fmtDiaCurto_(iso) {
+  const t = String(iso || '').slice(0, 10);
+  const p = t.split('-');
+  if (p.length < 3) return t || '--';
+  return p[2] + '/' + p[1];
+}
+
+function diasAtrasoIso_(fim, limite) {
+  if (!fim || !limite) return 0;
+  const a = Util.paraData(fim);
+  const b = Util.paraData(limite);
+  if (!a || !b) return 0;
+  return Math.round((Util.inicioDoDia(a).getTime() - Util.inicioDoDia(b).getTime()) / MS_DIA);
+}
+
+function estadoPrazoDatas_(fimIso, desejada, prometida, situacao, temPrograma) {
+  const sit = String(situacao || '').toUpperCase();
+  if (sit === SITUACAO_DEMANDA.semMaquina ||
+      sit === SITUACAO_DEMANDA.semUnidade ||
+      sit === SITUACAO_DEMANDA.bloqueadaMp) {
+    return ESTADO_PRAZO.bloqueado;
+  }
+  if (!temPrograma || !fimIso) return ESTADO_PRAZO.semPrograma;
+  const prom = prometida || desejada || '';
+  const dese = desejada || '';
+  if (prom && fimIso > prom) return ESTADO_PRAZO.atrasado;
+  if (dese && fimIso > dese) return ESTADO_PRAZO.risco;
+  return ESTADO_PRAZO.noPrazo;
+}
+
+function restricaoPorSituacao_(situacao) {
+  const sit = String(situacao || '').toUpperCase();
+  if (sit === SITUACAO_DEMANDA.semMaquina) return RESTRICAO.semMaquina;
+  if (sit === SITUACAO_DEMANDA.semUnidade) return RESTRICAO.semUnidade;
+  if (sit === SITUACAO_DEMANDA.bloqueadaMp) return RESTRICAO.bloqueadaMp;
+  return '';
+}
+
+function textoRestricao_(codigo, ctx) {
+  ctx = ctx || {};
+  const maq = ctx.maquinaNome || ctx.maquina || '';
+  const n = ctx.firmes != null ? ctx.firmes : 0;
+  const ate = fmtDiaCurto_(ctx.fimFila || '');
+  const livre = fmtDiaCurto_(ctx.inicio || ctx.livreEm || '');
+  const dias = ctx.atrasoDias || 0;
+  const cliente = fmtDiaCurto_(ctx.dataDesejada || ctx.dataCliente || '');
+  if (codigo === RESTRICAO.filaMaquina) {
+    return n
+      ? ('Fila da ' + maq + ': ' + n + ' OT(s) firme(s) ate ' + ate +
+        '; primeiro slot ' + livre +
+        (dias > 0 ? ' (' + dias + ' dia(s) apos a data do cliente ' + cliente + ')' : ''))
+      : ('Primeiro slot livre em ' + (maq || 'maquina') + ': ' + livre +
+        (dias > 0 ? ' (' + dias + ' dia(s) apos a data do cliente)' : ''));
+  }
+  if (codigo === RESTRICAO.congelamento) {
+    return 'Horizonte congelado ate ' + fmtDiaCurto_(ctx.limiteCongela) +
+      '; backlog novo so entra no tempo livre (' + livre + ').';
+  }
+  if (codigo === RESTRICAO.campanhaCor) {
+    return 'Atrasou para agrupar campanha de cor/setup em ' + (maq || 'maquina') + '.';
+  }
+  if (codigo === RESTRICAO.semCapacidade) {
+    return 'Sem capacidade em ' + (maq || 'maquina') + ' ate o fim do horizonte.';
+  }
+  if (codigo === RESTRICAO.semOperador) {
+    return 'Sem operador habilitado em ' + (maq || 'maquina') + ' no horizonte.';
+  }
+  if (codigo === RESTRICAO.gargaloPessoal) {
+    return 'Gargalo de pessoas em ' + (maq || 'maquina') + ' no slot alocado.';
+  }
+  if (codigo === RESTRICAO.bloqueadaMp) return 'Item bloqueado por materia-prima.';
+  if (codigo === RESTRICAO.semVelocidade) return 'Sem velocidade cadastrada para o item/maquina.';
+  if (codigo === RESTRICAO.semMaquina) return 'Linha sem maquina no backlog — o motor nao agenda.';
+  if (codigo === RESTRICAO.semUnidade) return 'Unidade sem fator de pecas — quantidade nao converte.';
+  if (codigo === RESTRICAO.cobertaEstoque) return 'Atendida pelo saldo em estoque.';
+  if (codigo === RESTRICAO.jaNaMaquina) return 'Ja coberta por OT firme ou criada nesta PV+Ln.';
+  if (codigo === RESTRICAO.semPecas) return 'Sem pecas convertidas para programar.';
+  if (codigo === RESTRICAO.acimaDaDemanda) return 'Quantidade ultrapassaria a demanda do item.';
+  return '';
+}
+
+function inferirRestricaoLinha_(l, cob, firmesMaq, congela) {
+  const sit = restricaoPorSituacao_(l.situacao);
+  if (sit) return { codigo: sit, texto: textoRestricao_(sit, { maquinaNome: l.maquinaNome }) };
+  if (!cob || l.cobertura === COBERTURA.semOrdem) {
+    return { codigo: '', texto: '' };
+  }
+  if (l.estadoPrazo !== ESTADO_PRAZO.risco && l.estadoPrazo !== ESTADO_PRAZO.atrasado) {
+    return { codigo: '', texto: '' };
+  }
+  const inicio = cob.inicio || '';
+  const atraso = l.atrasoDias || 0;
+  const n = (firmesMaq || []).filter(function (o) {
+    if (o.chaveDemanda === l.chave) return false;
+    const fim = dataOrdemIso_(o);
+    return fim && l.dataDesejada && fim > l.dataDesejada;
+  }).length;
+  const ultima = (firmesMaq || []).reduce(function (acc, o) {
+    const fim = dataOrdemIso_(o);
+    return (!acc || fim > acc) ? fim : acc;
+  }, '');
+  if (congela && congela.painel && inicio && inicio.slice(0, 10) <= String(congela.painel.limite || '')) {
+    return {
+      codigo: RESTRICAO.congelamento,
+      texto: textoRestricao_(RESTRICAO.congelamento, {
+        limiteCongela: congela.painel.limite,
+        inicio: inicio,
+        maquinaNome: l.maquinaNome,
+      }),
+    };
+  }
+  return {
+    codigo: RESTRICAO.filaMaquina,
+    texto: textoRestricao_(RESTRICAO.filaMaquina, {
+      maquinaNome: l.maquinaNome,
+      firmes: n,
+      fimFila: ultima,
+      inicio: inicio,
+      atrasoDias: atraso,
+      dataDesejada: l.dataDesejada,
+    }),
+  };
+}
+
+function compararPedidoProducao_(a, b) {
+  const pa = a.prioridadeManual == null ? 9999 : a.prioridadeManual;
+  const pb = b.prioridadeManual == null ? 9999 : b.prioridadeManual;
+  if (pa !== pb) return pa - pb;
+  const sa = a.sequencia == null ? 9999 : a.sequencia;
+  const sb = b.sequencia == null ? 9999 : b.sequencia;
+  if (sa !== sb) return sa - sb;
+  return String(a.dataDesejada || '9999').localeCompare(String(b.dataDesejada || '9999')) ||
+    String(a.dataPrometida || '9999').localeCompare(String(b.dataPrometida || '9999')) ||
+    String(a.chave).localeCompare(String(b.chave));
 }
 
 function gravarEncerramento_(o, agora) {
@@ -2618,6 +2863,8 @@ function apiAplicarSugestao(grupoOuFiltro) {
     aplicada: true,
     resumo: sugestao.resumo,
     avisos: sugestao.avisos,
+    ignoradas: sugestao.ignoradas,
+    diagnosticos: sugestao.diagnosticos || {},
   };
   return plano;
 }
@@ -2730,7 +2977,11 @@ function montarSugestao(grupoOuFiltro, hoje) {
       if (fb) d.maquinaId = fb;
     }
     if (!d.maquinaId || !mapaMaqs[d.maquinaId]) {
-      ignoradas.push(Object.assign({ tipo: 'semMaquina' }, marca));
+      ignoradas.push(Object.assign({
+        tipo: 'semMaquina',
+        restricao: RESTRICAO.semMaquina,
+        restricaoTexto: textoRestricao_(RESTRICAO.semMaquina, {}),
+      }, marca));
       return;
     }
     demandas.push(d);
@@ -2829,6 +3080,9 @@ function montarSugestao(grupoOuFiltro, hoje) {
           item: d.itemCodigo,
           chave: d.chave,
           pecas: pecasFirmes + pecasEstoque,
+          restricao: pecasEstoque ? RESTRICAO.cobertaEstoque : RESTRICAO.jaNaMaquina,
+          restricaoTexto: textoRestricao_(
+            pecasEstoque ? RESTRICAO.cobertaEstoque : RESTRICAO.jaNaMaquina, {}),
         });
         return false;
       })
@@ -2843,6 +3097,8 @@ function montarSugestao(grupoOuFiltro, hoje) {
           item: d.itemCodigo,
           chave: d.chave,
           maquina: maq.nome,
+          restricao: RESTRICAO.semOperador,
+          restricaoTexto: textoRestricao_(RESTRICAO.semOperador, { maquinaNome: maq.nome }),
         });
       });
       return;
@@ -2875,6 +3131,8 @@ function montarSugestao(grupoOuFiltro, hoje) {
           tipo: qty ? 'acimaDaDemanda' : 'semPecas',
           item: job.itemCodigo,
           chave: job.chave,
+          restricao: qty ? RESTRICAO.acimaDaDemanda : RESTRICAO.semPecas,
+          restricaoTexto: textoRestricao_(qty ? RESTRICAO.acimaDaDemanda : RESTRICAO.semPecas, {}),
         });
         continue;
       }
@@ -2882,14 +3140,27 @@ function montarSugestao(grupoOuFiltro, hoje) {
       const pecasHora = velocidadeJob_(job, vel, maq);
       if (!pecasHora) {
         semVelocidade++;
-        avisos.push({ tipo: 'semVelocidade', item: job.itemCodigo, maquina: maq.nome });
+        avisos.push({
+          tipo: 'semVelocidade',
+          item: job.itemCodigo,
+          chave: job.chave,
+          maquina: maq.nome,
+          restricao: RESTRICAO.semVelocidade,
+          restricaoTexto: textoRestricao_(RESTRICAO.semVelocidade, { maquinaNome: maq.nome }),
+        });
         continue;
       }
 
       const mpEstado = estadoMp_(job.itemCodigo, mp, hoje, fimHorizonte);
       if (mpEstado.bloqueadaSemRetorno) {
         bloqueadasMp++;
-        avisos.push({ tipo: 'bloqueadaMp', item: job.itemCodigo, chave: job.chave });
+        avisos.push({
+          tipo: 'bloqueadaMp',
+          item: job.itemCodigo,
+          chave: job.chave,
+          restricao: RESTRICAO.bloqueadaMp,
+          restricaoTexto: textoRestricao_(RESTRICAO.bloqueadaMp, {}),
+        });
         continue;
       }
 
@@ -2901,12 +3172,20 @@ function montarSugestao(grupoOuFiltro, hoje) {
 
       if (!slot) {
         semCapacidade++;
-        avisos.push({ tipo: 'semCapacidade', item: job.itemCodigo, chave: job.chave, maquina: maq.nome });
+        avisos.push({
+          tipo: 'semCapacidade',
+          item: job.itemCodigo,
+          chave: job.chave,
+          maquina: maq.nome,
+          restricao: RESTRICAO.semCapacidade,
+          restricaoTexto: textoRestricao_(RESTRICAO.semCapacidade, { maquinaNome: maq.nome }),
+        });
         continue;
       }
       if (slot.gargaloPessoal) gargaloPessoal++;
 
       const fimIso = Util.chaveDia(slot.fim);
+      const iniIso = Util.chaveDia(slot.inicio);
       const desejada = job.dataDesejada || job.dataPrometida || '';
       const prometida = job.dataPrometida || desejada;
       let estado = 'noPrazo';
@@ -2914,8 +3193,30 @@ function montarSugestao(grupoOuFiltro, hoje) {
       else if (desejada && fimIso > desejada) { estado = 'risco'; }
       else noPrazo++;
 
+      const atrasoDias = diasAtrasoIso_(fimIso, prometida || desejada);
+      const fimFila = firmesMaq.length
+        ? dataOrdemIso_(firmesMaq[firmesMaq.length - 1])
+        : '';
+      let restricao = '';
+      if (estado === 'atrasado' || estado === 'risco') {
+        if (slot.gargaloPessoal) restricao = RESTRICAO.gargaloPessoal;
+        else if (setup > 0 && ultimaCor && job.cor && job.cor === ultimaCor) restricao = RESTRICAO.campanhaCor;
+        else if (congela && congela.painel && iniIso && iniIso <= String(congela.painel.limite || '')) {
+          restricao = RESTRICAO.congelamento;
+        } else restricao = RESTRICAO.filaMaquina;
+      }
+      const restricaoTexto = restricao ? textoRestricao_(restricao, {
+        maquinaNome: maq.nome,
+        firmes: firmesMaq.length,
+        fimFila: fimFila,
+        inicio: iniIso,
+        atrasoDias: atrasoDias,
+        dataDesejada: desejada,
+        limiteCongela: congela && congela.painel ? congela.painel.limite : '',
+      }) : '';
+
       propostas.push({
-        id: Util.gerarId('OP'),
+        id: Util.gerarId('OT'),
         chave_demanda: job.chave,
         item_codigo: job.itemCodigo,
         maquina_id: maq.id,
@@ -2932,6 +3233,10 @@ function montarSugestao(grupoOuFiltro, hoje) {
         dataPrometida: job.dataPrometida,
         cor: job.cor,
         estado: estado,
+        estadoPrazo: estado,
+        atrasoDias: atrasoDias,
+        restricao: restricao,
+        restricaoTexto: restricaoTexto,
         gargaloPessoal: !!slot.gargaloPessoal,
       });
       cobertoItem[job.itemCodigo] = jaItem + qty;
@@ -2941,6 +3246,32 @@ function montarSugestao(grupoOuFiltro, hoje) {
     }
   });
 
+  const diagnosticos = {};
+  propostas.forEach(function (p) {
+    if (!p.chave_demanda) return;
+    diagnosticos[p.chave_demanda] = {
+      estadoPrazo: p.estadoPrazo || p.estado,
+      restricao: p.restricao || '',
+      restricaoTexto: p.restricaoTexto || '',
+      atrasoDias: p.atrasoDias || 0,
+      inicio: p.inicio,
+      fim: p.fim,
+    };
+  });
+  avisos.concat(ignoradas).forEach(function (a) {
+    if (!a || !a.chave || diagnosticos[a.chave]) return;
+    diagnosticos[a.chave] = {
+      estadoPrazo: a.restricao === RESTRICAO.cobertaEstoque || a.restricao === RESTRICAO.jaNaMaquina
+        ? ESTADO_PRAZO.noPrazo
+        : (a.restricao === RESTRICAO.semMaquina || a.restricao === RESTRICAO.bloqueadaMp
+          ? ESTADO_PRAZO.bloqueado
+          : ESTADO_PRAZO.semPrograma),
+      restricao: a.restricao || a.tipo || '',
+      restricaoTexto: a.restricaoTexto || '',
+      atrasoDias: 0,
+    };
+  });
+
   return {
     grupo: filtroGrupo,
     filtro: escopo,
@@ -2948,6 +3279,7 @@ function montarSugestao(grupoOuFiltro, hoje) {
     otimizacao: otim.painel,
     congelamento: congela.painel,
     propostas: propostas,
+    diagnosticos: diagnosticos,
     avisos: avisos.concat(ignoradas).slice(0, 40),
     ignoradas: ignoradas.slice(0, 60),
     resumo: {
@@ -3061,8 +3393,8 @@ function aplicarSugestao_(sugestao) {
 
 /**
  * Transforma ordens ja na maquina (congeladas / horizonte curto) em LIBERADA.
- * Devolve o plano atualizado e o XLSX para criar as OPs no sistema. Uma PV+Ln
- * vira uma OP; o restante do Gantt (sugerido, fora do horizonte) nao sai.
+ * Devolve o plano atualizado e o XLSX para criar as OTs no sistema. Uma PV+Ln
+ * vira uma OT; o restante do Gantt (sugerido, fora do horizonte) nao sai.
  */
 function apiLiberarPlanejadas(payload) {
   payload = payload || {};
@@ -3102,8 +3434,8 @@ function apiLiberarPlanejadas(payload) {
   if (!alvos.length) {
     const ja = Object.keys(jaTemOp).length;
     throw new Error(ja
-      ? 'Nenhuma OP nova para criar: as linhas deste recorte ja tem OP criada ou encerrada.'
-      : 'Nenhuma ordem na maquina para criar OP. Congele o horizonte (cadeado no Gantt) ou aplique o plano no periodo de congelamento.');
+      ? 'Nenhuma OT nova para criar: as linhas deste recorte ja tem OT criada ou encerrada.'
+      : 'Nenhuma ordem na maquina para criar OT. Congele o horizonte (cadeado no Gantt) ou aplique o plano no periodo de congelamento.');
   }
 
   const agora = new Date();
@@ -3177,10 +3509,10 @@ function apiCongelarNaMaquina(payload) {
 }
 
 /**
- * Encerra OPs ja liberadas. Padrao: so as cujo pedido saiu do backlog
+ * Encerra OTs ja liberadas. Padrao: so as cujo pedido saiu do backlog
  * (producao concluida). Com ids, encerra aquelas OPs. Com todas=true,
  * encerra as LIBERADA do recorte. Encerrada nao ocupa maquina e nao
- * pode ser liberada de novo (MTO: uma PV+Ln = uma OP).
+ * pode ser liberada de novo (MTO: uma PV+Ln = uma OT).
  */
 function apiEncerrarOrdens(payload) {
   payload = payload || {};
@@ -3220,7 +3552,7 @@ function apiEncerrarOrdens(payload) {
     return !d || d.situacao === SITUACAO_DEMANDA.encerrada || !abertas[o.chaveDemanda];
   });
   if (!alvos.length) {
-    throw new Error('Nenhuma OP liberada para encerrar neste recorte. Importe o backlog (linhas que sumiram encerram sozinhas) ou marque as OPs finalizadas no Gantt.');
+    throw new Error('Nenhuma OT liberada para encerrar neste recorte. Importe o backlog (linhas que sumiram encerram sozinhas) ou marque as OTs finalizadas no Gantt.');
   }
 
   alvos.forEach(function (o) { gravarEncerramento_(o, agora); });
@@ -3654,7 +3986,7 @@ function apiTravarOrdem(payload) {
   if (!ordem) throw new Error('Ordem nao encontrada.');
   if (ordem.tipo === TIPO_ORDEM.encerrada) throw new Error('OP encerrada nao altera cadeado.');
   if (ordem.tipo === TIPO_ORDEM.liberada && payload.travada === false) {
-    throw new Error('OP criada permanece na maquina ate ser encerrada.');
+    throw new Error('OT criada permanece na maquina ate ser encerrada.');
   }
   const travada = Util.simNao(payload.travada);
   Repo.atualizarCelulas(ABAS.ordens, ordem._linha, { travada: travada, atualizado_em: new Date() });
@@ -4293,7 +4625,7 @@ function instrucaoSistemaChat_(idioma, estado) {
     '- Saldo inicial vem da aba ESTOQUE; se ninguem alimentou, comeca em zero.',
     '- Ordem LIBERADA entra na grade mesmo sem pedido amarrado.',
     '- MTO: cada linha de backlog (PV+Ln) e uma ordem de trabalho exclusiva. Nao fundir pedidos.',
-    '- "OP criada" = tipo LIBERADA (no chao). "Encerrada" = producao finalizada: nao ocupa maquina e nao pode criar OP de novo. "Na maquina" = congelada. "Sugerida" = ainda pode reprogramar. "Sem ordem" = backlog sem OP.',
+    '- "OT criada" = tipo LIBERADA (no chao). "Encerrada" = producao finalizada: nao ocupa maquina e nao pode criar OT de novo. "Na maquina" = congelada. "Sugerida" = ainda pode reprogramar. "Sem ordem" = backlog sem OT.',
     '- MTO: cada PV+Ln e uma unica ordem de trabalho. Nunca libere duplicado. Encerrar quando a OP terminar (o backlog sumindo tambem encerra sozinho).',
     '- Ao sugerir plano, preserve o que ja esta na maquina e so encaixe backlog novo no tempo livre depois dessas ordens.',
     '- Nao planeje mais pecas do que a demanda liquida (demanda - saldo - liberada).',
@@ -4307,7 +4639,7 @@ function instrucaoSistemaChat_(idioma, estado) {
     '- Primeiro os numeros que importam, depois a lista das ordens concretas (id, cliente, item, maquina, fim vs desejada/prometida).',
     '- Traduza estado: noPrazo = no prazo, risco = em risco, atrasado = atrasada, semData = sem data no Gantt.',
     '- Se houver risco ou atraso, sugira o proximo passo em linguagem humana: antecipar, travar, priorizar, sugerir um plano novo, ou aplicar a sugestao ja gerada.',
-    '- Nao despeje JSON. Nao invente OP, cliente ou data que a ferramenta nao devolveu.',
+    '- Nao despeje JSON. Nao invente OT, cliente ou data que a ferramenta nao devolveu.',
     '- Seja fluido, nao seco: um paragrafo de contexto e uma lista quando houver varios itens.',
     '',
     'Estado atual (KPIs, so contexto — confirme com ferramentas se a pergunta for operacional):',
@@ -4369,7 +4701,7 @@ function declaracoesFerramentasChat_() {
     },
     {
       name: 'consultarCoberturaBacklog',
-      description: 'Quais linhas do backlog (PV+Ln) ja tem OP criada, quais estao na maquina, quais so foram sugeridas, quais ainda nao tem ordem e quais OPs ja foram encerradas. Use quando perguntarem o que ja foi criado, o que falta, cobertura MTO, duplicata.',
+      description: 'Quais linhas do backlog (PV+Ln) ja tem OT criada, quais estao na maquina, quais so foram sugeridas, quais ainda nao tem ordem e quais OTs ja foram encerradas. Use quando perguntarem o que ja foi criado, o que falta, cobertura MTO, duplicata.',
       parameters: obj({
         grupo: { type: 'STRING' },
         cobertura: { type: 'STRING', description: 'semOrdem, sugerida, naMaquina, opCriada, encerrada ou todos' },
@@ -4425,10 +4757,10 @@ function declaracoesFerramentasChat_() {
     },
     {
       name: 'encerrarOrdens',
-      description: 'Encerra OPs ja liberadas e finalizadas. Sem ids, encerra as cujo pedido saiu do backlog. Impede criar OP duplicada da mesma PV+Ln. Exige confirmacao.',
+      description: 'Encerra OTs ja liberadas e finalizadas. Sem ids, encerra as cujo pedido saiu do backlog. Impede criar OT duplicada da mesma PV+Ln. Exige confirmacao.',
       parameters: obj({
         grupo: { type: 'STRING' },
-        id: { type: 'STRING', description: 'Id de uma OP (opcional)' },
+        id: { type: 'STRING', description: 'Id de uma OT (opcional)' },
         ids: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Ids de OP (opcional)' },
         todas: { type: 'BOOLEAN', description: 'Se true, encerra todas as LIBERADA do recorte' },
       }),
@@ -4753,7 +5085,7 @@ function montarCoberturaChat_(args) {
       sugerida: 'Ja tem ordem planejada, ainda pode ser reprogramada.',
       naMaquina: 'Congelada no Gantt. O motor nao remexe; backlog novo espera tempo livre.',
       opCriada: 'LIBERADA: OP ja criada para o chao (XLSX de liberacao).',
-      encerrada: 'Producao finalizada. Nao ocupa maquina e nao pode criar OP de novo nesta PV+Ln.',
+      encerrada: 'Producao finalizada. Nao ocupa maquina e nao pode criar OT de novo nesta PV+Ln.',
     },
     mto: 'Cada PV+Ln e uma ordem exclusiva. Nao se funde com outro pedido e nao se libera duas vezes.',
     resumo: {
@@ -4826,9 +5158,9 @@ function resumoEscritaChat_(nome, args) {
     return 'congelar na maquina as ordens do horizonte curto' + (args.grupo ? ' (' + args.grupo + ')' : '');
   }
   if (nome === 'encerrarOrdens') {
-    if (args.ids && args.ids.length) return 'encerrar as OPs ' + args.ids.join(', ');
-    if (args.todas) return 'encerrar todas as OPs liberadas' + (args.grupo ? ' de ' + args.grupo : '');
-    return 'encerrar as OPs cujo pedido ja saiu do backlog' + (args.grupo ? ' (' + args.grupo + ')' : '');
+    if (args.ids && args.ids.length) return 'encerrar as OTs ' + args.ids.join(', ');
+    if (args.todas) return 'encerrar todas as OTs liberadas' + (args.grupo ? ' de ' + args.grupo : '');
+    return 'encerrar as OTs cujo pedido ja saiu do backlog' + (args.grupo ? ' (' + args.grupo + ')' : '');
   }
   if (nome === 'priorizarDemanda') {
     return 'priorizar a demanda ' + (args.chave || '?') + ' (prioridade ' + (args.prioridade != null ? args.prioridade : '?') + ')';
@@ -5136,7 +5468,7 @@ const I18n = {
       importandoBacklog: 'Importando backlog',
       ultimaImportacao: 'Ultima importacao',
       nuncaImportado: 'Backlog ainda nao importado',
-      importadoResumo: '{abertas} abertas · {novas} novas · {atualizadas} atualizadas · {encerradas} encerradas · {ordensEncerradas} OPs finalizadas · {ordensOrfasRemovidas} planejadas orfas removidas · {ordensFirmesOrfas} firmes sem demanda',
+      importadoResumo: '{abertas} abertas · {novas} novas · {atualizadas} atualizadas · {encerradas} encerradas · {ordensEncerradas} OTs finalizadas · {ordensOrfasRemovidas} planejadas orfas removidas · {ordensFirmesOrfas} firmes sem demanda',
       alertaDemandasSemMaquina: '{n} linha(s) sem maquina no backlog.',
       alertaDemandasSemUnidade: '{n} linha(s) com unidade sem fator de pecas.',
       alertaDemandasRevisar: '{n} linha(s) de demanda pedem revisao.',
@@ -5148,7 +5480,7 @@ const I18n = {
       colSituacao: 'Situacao',
       cliente: 'Cliente',
       painelSub: 'Ocupacao das tecnologias, maquinas e operadores nos proximos dias',
-      planoSub: 'Demanda, ordem liberada, ordem planejada e estoque projetado',
+      planoSub: 'Pedidos em aberto, status da OT e restricoes do plano',
       ganttSub: 'Sequenciamento por maquina — fonte da verdade do plano',
       chatSub: 'Colega de PCP: status das ordens, risco, SL e mudancas com confirmacao',
       slSub: 'Flexibility e Reliability lado a lado',
@@ -5174,13 +5506,13 @@ const I18n = {
       otimizacaoFolga: 'Folga (dias)',
       otimizacaoDica: 'Nas semanas da janela, produz o quanto antes para agrupar setup. Fora dela, entrega com a folga antes da data do cliente.',
       congelarDias: 'Congelar (dias)',
-      congelarDica: 'MTO: uma PV+Ln = uma OP. O que ja esta na maquina (congelado ou OP criada) nao se remexe. Backlog novo so entra no tempo livre.',
+      congelarDica: 'MTO: uma PV+Ln = uma OT. O que ja esta na maquina (congelado ou OT criada) nao se remexe. Backlog novo so entra no tempo livre.',
       congelarNaMaquina: 'Congelar na maquina',
       congelarOk: '{n} ordens congeladas ate {limite}. O motor nao as move.',
-      encerrarOrdens: 'Encerrar OPs finalizadas',
-      confirmarEncerrar: 'Encerrar as OPs cujo pedido ja saiu do backlog? Elas saem da maquina e nao podem ser liberadas de novo (uma PV+Ln = uma OP).',
-      encerrarOk: '{n} OPs encerradas.',
-      encerrarUma: 'Encerrar OP',
+      encerrarOrdens: 'Encerrar OTs finalizadas',
+      confirmarEncerrar: 'Encerrar as OTs cujo pedido ja saiu do backlog? Elas saem da maquina e nao podem ser liberadas de novo (uma PV+Ln = uma OT).',
+      encerrarOk: '{n} OTs encerradas.',
+      encerrarUma: 'Encerrar OT',
       itemSemMaquina: '{n} linha(s) sem maquina — o motor nao agenda',
       itemSaldo: 'saldo {pecas}',
       itemSemPlano: '{pecas} pc sem ordem em {n} linha(s)',
@@ -5190,10 +5522,10 @@ const I18n = {
       linhaFalta: 'falta {pecas}',
       linhaTravada: 'na maquina',
       linhaOrdemSemData: 'sem data',
-      ordemLiberada: 'OP criada',
+      ordemLiberada: 'OT criada',
       coberturaSugerida: 'sugerida',
       coberturaNaMaquina: 'na maquina',
-      coberturaOpCriada: 'OP criada',
+      coberturaOpCriada: 'OT criada',
       coberturaEncerrada: 'encerrada',
       motivo_semVelocidade: 'sem velocidade',
       motivo_semPecas: 'sem pecas convertidas',
@@ -5206,14 +5538,50 @@ const I18n = {
       motivo_maquinaForaDoGrupo: 'maquina fora do grupo',
       motivo_chaveDuplicada: 'chave duplicada',
       motivo_acimaDaDemanda: 'acima da demanda',
-      liberarPlanejadas: 'Criar OPs (liberar)',
-      confirmarLiberacao: 'Criar OP so para o que ja esta na maquina neste recorte? Cada PV+Ln vira uma ordem. O XLSX baixa para o sistema. O restante do Gantt fica sugerido.',
-      liberadasOk: '{n} OPs marcadas como criadas. Use o XLSX no sistema.',
+      motivo_filaMaquina: 'fila da maquina',
+      motivo_congelamento: 'horizonte congelado',
+      motivo_campanhaCor: 'campanha de cor/setup',
+      motivo_gargaloPessoal: 'gargalo de pessoas',
+      motivo_semUnidade: 'unidade sem fator',
+      listaOt: 'Lista de pedidos',
+      gradeMrp: 'Grade MRP',
+      colSeq: 'Seq',
+      colStatusOt: 'Status OT',
+      colSaude: 'Prazo',
+      colRestricao: 'Restricao',
+      colJanela: 'Maquina · janela',
+      statusOt_semOt: 'Sem OT',
+      statusOt_sugerida: 'Sugerida',
+      statusOt_naMaquina: 'Na maquina',
+      statusOt_otCriada: 'OT criada',
+      statusOt_encerrada: 'Encerrada',
+      saude_noPrazo: 'No prazo',
+      saude_risco: 'Vai atrasar',
+      saude_atrasado: 'Atrasado',
+      saude_semPrograma: 'Sem programa',
+      saude_bloqueado: 'Bloqueado',
+      chipAtrasados: 'Atrasados',
+      chipRisco: 'Em risco',
+      chipSemOt: 'Sem OT',
+      chipBloqueados: 'Bloqueados',
+      chipNoPrazo: 'No prazo',
+      chipOtCriada: 'OT criada',
+      chipEncerradas: 'Encerradas',
+      chipTodos: 'Todos',
+      prioridadeAlterada: 'Prioridade alterada. Recalcular o plano para a nova ordem de producao?',
+      recalcularPlano: 'Recalcular plano',
+      verNoGantt: 'Ver no Gantt',
+      drawerOtTitulo: 'Pedido {pv} Ln {ln}',
+      drawerSemMotivo: 'Sem restricao: o plano atende a data do cliente.',
+      dataCliente: 'Data do cliente',
+      liberarPlanejadas: 'Criar OTs (liberar)',
+      confirmarLiberacao: 'Criar OT so para o que ja esta na maquina neste recorte? Cada PV+Ln vira uma ordem. O XLSX baixa para o sistema. O restante do Gantt fica sugerido.',
+      liberadasOk: '{n} OTs marcadas como criadas. Use o XLSX no sistema.',
       colSo: 'Numero da SO',
       colLinhaSo: 'Linha',
       kpiSemPlano: 'Sem ordem',
       kpiNaMaquina: 'Na maquina',
-      kpiOpCriada: 'OP criada',
+      kpiOpCriada: 'OT criada',
       kpiEncerrada: 'Encerrada',
       kpiSugerida: 'Sugerida',
       kpiEstoque: 'Saldo em estoque',
@@ -5266,8 +5634,8 @@ const I18n = {
       chatDicaPlano: 'Sugira um plano para RFID',
       chatDicaPendencias: 'Quais pendencias de cadastro temos?',
       chatDicaCobertura: 'Quais linhas do backlog ainda nao tem ordem?',
-      chatDicaEncerrar: 'Quais OPs ja foram criadas e quais ja encerraram?',
-      ganttAviso: 'Arraste so o que ainda e sugerido. OP criada e ordem na maquina (cadeado) nao se movem. A faixa colorida e o % de enchimento do turno.',
+      chatDicaEncerrar: 'Quais OTs ja foram criadas e quais ja encerraram?',
+      ganttAviso: 'Arraste so o que ainda e sugerido. OT criada e ordem na maquina (cadeado) nao se movem. A faixa colorida e o % de enchimento do turno.',
       ocupacao: 'Ocupacao',
       ocupacaoMaquinas: 'Ocupacao das maquinas',
       ocupacaoOperadores: 'Ocupacao dos operadores',
@@ -5418,7 +5786,7 @@ const I18n = {
       colSituacao: 'Status',
       cliente: 'Customer',
       painelSub: 'Occupancy of technologies, machines and operators for the next days',
-      planoSub: 'Demand, firm order, planned order and projected stock',
+      planoSub: 'Open orders, OT status and plan constraints',
       ganttSub: 'Machine sequencing — source of truth for the plan',
       chatSub: 'PCP colleague: order status, risk, SL and confirmed changes',
       slSub: 'Flexibility and Reliability side by side',
@@ -5444,13 +5812,13 @@ const I18n = {
       otimizacaoFolga: 'Buffer (days)',
       otimizacaoDica: 'Inside the window, produce as soon as possible to group setups. Outside it, finish with the buffer before the customer date.',
       congelarDias: 'Freeze (days)',
-      congelarDica: 'MTO: one SO+Ln = one shop order. What is already on the machine (frozen or created) does not move. New backlog only uses free time.',
+      congelarDica: 'MTO: one SO+Ln = one OT. What is already on the machine (frozen or created) does not move. New backlog only uses free time.',
       congelarNaMaquina: 'Freeze on machine',
       congelarOk: '{n} orders frozen until {limite}. The engine will not move them.',
-      encerrarOrdens: 'Close finished WOs',
-      confirmarEncerrar: 'Close WOs whose sales line already left the backlog? They leave the machine and cannot be released again (one SO+Ln = one WO).',
-      encerrarOk: '{n} WOs closed.',
-      encerrarUma: 'Close WO',
+      encerrarOrdens: 'Close finished OTs',
+      confirmarEncerrar: 'Close OTs whose sales line already left the backlog? They leave the machine and cannot be released again (one SO+Ln = one OT).',
+      encerrarOk: '{n} OTs closed.',
+      encerrarUma: 'Close OT',
       itemSemMaquina: '{n} line(s) with no machine — the engine will not schedule them',
       itemSaldo: 'on hand {pecas}',
       itemSemPlano: '{pecas} pc with no order across {n} line(s)',
@@ -5460,10 +5828,10 @@ const I18n = {
       linhaFalta: 'missing {pecas}',
       linhaTravada: 'on machine',
       linhaOrdemSemData: 'no date',
-      ordemLiberada: 'WO created',
+      ordemLiberada: 'OT created',
       coberturaSugerida: 'suggested',
       coberturaNaMaquina: 'on machine',
-      coberturaOpCriada: 'WO created',
+      coberturaOpCriada: 'OT created',
       coberturaEncerrada: 'closed',
       motivo_semVelocidade: 'missing speed',
       motivo_semPecas: 'no converted pieces',
@@ -5476,14 +5844,50 @@ const I18n = {
       motivo_maquinaForaDoGrupo: 'machine outside the group',
       motivo_chaveDuplicada: 'duplicate key',
       motivo_acimaDaDemanda: 'above demand',
-      liberarPlanejadas: 'Create WOs (release)',
-      confirmarLiberacao: 'Create shop orders only for what is already on the machine in this view? Each SO+Ln becomes one WO. An XLSX downloads. The rest of the Gantt stays suggested.',
-      liberadasOk: '{n} WOs marked as created. Use the XLSX in the system.',
+      motivo_filaMaquina: 'machine queue',
+      motivo_congelamento: 'frozen horizon',
+      motivo_campanhaCor: 'color/setup campaign',
+      motivo_gargaloPessoal: 'people bottleneck',
+      motivo_semUnidade: 'unit without factor',
+      listaOt: 'Order list',
+      gradeMrp: 'MRP grid',
+      colSeq: 'Seq',
+      colStatusOt: 'OT status',
+      colSaude: 'Due',
+      colRestricao: 'Constraint',
+      colJanela: 'Machine · window',
+      statusOt_semOt: 'No OT',
+      statusOt_sugerida: 'Suggested',
+      statusOt_naMaquina: 'On machine',
+      statusOt_otCriada: 'OT created',
+      statusOt_encerrada: 'Closed',
+      saude_noPrazo: 'On time',
+      saude_risco: 'Will be late',
+      saude_atrasado: 'Late',
+      saude_semPrograma: 'Unscheduled',
+      saude_bloqueado: 'Blocked',
+      chipAtrasados: 'Late',
+      chipRisco: 'At risk',
+      chipSemOt: 'No OT',
+      chipBloqueados: 'Blocked',
+      chipNoPrazo: 'On time',
+      chipOtCriada: 'OT created',
+      chipEncerradas: 'Closed',
+      chipTodos: 'All',
+      prioridadeAlterada: 'Priority changed. Recalculate the plan for the new production sequence?',
+      recalcularPlano: 'Recalculate plan',
+      verNoGantt: 'Open in Gantt',
+      drawerOtTitulo: 'Order {pv} Ln {ln}',
+      drawerSemMotivo: 'No constraint: the plan meets the customer date.',
+      dataCliente: 'Customer date',
+      liberarPlanejadas: 'Create OTs (release)',
+      confirmarLiberacao: 'Create OTs only for what is already on the machine in this view? Each SO+Ln becomes one OT. An XLSX downloads. The rest of the Gantt stays suggested.',
+      liberadasOk: '{n} OTs marked as created. Use the XLSX in the system.',
       colSo: 'SO number',
       colLinhaSo: 'Line',
       kpiSemPlano: 'No order',
       kpiNaMaquina: 'On machine',
-      kpiOpCriada: 'WO created',
+      kpiOpCriada: 'OT created',
       kpiEncerrada: 'Closed',
       kpiSugerida: 'Suggested',
       kpiEstoque: 'On-hand stock',
@@ -5676,7 +6080,7 @@ const I18n = {
       importandoBacklog: 'Importando backlog',
       ultimaImportacao: 'Ultima importacion',
       nuncaImportado: 'Backlog aun no importado',
-      importadoResumo: '{abertas} abiertas · {novas} nuevas · {atualizadas} actualizadas · {encerradas} cerradas · {ordensEncerradas} OPs finalizadas · {ordensOrfasRemovidas} planificadas huerfanas quitadas · {ordensFirmesOrfas} firmes sin demanda',
+      importadoResumo: '{abertas} abiertas · {novas} nuevas · {atualizadas} actualizadas · {encerradas} cerradas · {ordensEncerradas} OTs finalizadas · {ordensOrfasRemovidas} planificadas huerfanas quitadas · {ordensFirmesOrfas} firmes sin demanda',
       alertaDemandasSemMaquina: '{n} linea(s) sin maquina en el backlog.',
       alertaDemandasSemUnidade: '{n} linea(s) con unidad sin factor de piezas.',
       alertaDemandasRevisar: '{n} linea(s) de demanda piden revision.',
@@ -5688,7 +6092,7 @@ const I18n = {
       colSituacao: 'Situacion',
       cliente: 'Cliente',
       painelSub: 'Ocupacion de tecnologias, maquinas y operadores en los proximos dias',
-      planoSub: 'Demanda, orden liberada, orden planeada y stock proyectado',
+      planoSub: 'Pedidos abiertos, estado de la OT y restricciones del plan',
       ganttSub: 'Secuenciacion por maquina — fuente de verdad del plan',
       chatSub: 'Colega de PCP: estado de ordenes, riesgo, SL y cambios con confirmacion',
       slSub: 'Flexibility y Reliability lado a lado',
@@ -5714,13 +6118,13 @@ const I18n = {
       otimizacaoFolga: 'Holgura (dias)',
       otimizacaoDica: 'En las semanas de la ventana, produce cuanto antes para agrupar setups. Fuera de ella, entrega con la holgura antes de la fecha del cliente.',
       congelarDias: 'Congelar (dias)',
-      congelarDica: 'MTO: una PV+Ln = una OP. Lo que ya esta en maquina (congelado u OP creada) no se mueve. El backlog nuevo solo usa tiempo libre.',
+      congelarDica: 'MTO: una PV+Ln = una OT. Lo que ya esta en maquina (congelado u OT creada) no se mueve. El backlog nuevo solo usa tiempo libre.',
       congelarNaMaquina: 'Congelar en maquina',
       congelarOk: '{n} ordenes congeladas hasta {limite}. El motor no las mueve.',
-      encerrarOrdens: 'Cerrar OPs finalizadas',
-      confirmarEncerrar: 'Cerrar las OPs cuyo pedido ya salio del backlog? Salen de la maquina y no se pueden liberar de nuevo (una PV+Ln = una OP).',
-      encerrarOk: '{n} OPs cerradas.',
-      encerrarUma: 'Cerrar OP',
+      encerrarOrdens: 'Cerrar OTs finalizadas',
+      confirmarEncerrar: 'Cerrar las OTs cuyo pedido ya salio del backlog? Salen de la maquina y no se pueden liberar de nuevo (una PV+Ln = una OT).',
+      encerrarOk: '{n} OTs cerradas.',
+      encerrarUma: 'Cerrar OT',
       itemSemMaquina: '{n} linea(s) sin maquina — el motor no las agenda',
       itemSaldo: 'saldo {pecas}',
       itemSemPlano: '{pecas} pz sin orden en {n} linea(s)',
@@ -5730,10 +6134,10 @@ const I18n = {
       linhaFalta: 'falta {pecas}',
       linhaTravada: 'en maquina',
       linhaOrdemSemData: 'sin fecha',
-      ordemLiberada: 'OP creada',
+      ordemLiberada: 'OT creada',
       coberturaSugerida: 'sugerida',
       coberturaNaMaquina: 'en maquina',
-      coberturaOpCriada: 'OP creada',
+      coberturaOpCriada: 'OT creada',
       coberturaEncerrada: 'cerrada',
       motivo_semVelocidade: 'sin velocidad',
       motivo_semPecas: 'sin piezas convertidas',
@@ -5746,14 +6150,50 @@ const I18n = {
       motivo_maquinaForaDoGrupo: 'maquina fuera del grupo',
       motivo_chaveDuplicada: 'clave duplicada',
       motivo_acimaDaDemanda: 'arriba de la demanda',
-      liberarPlanejadas: 'Crear OPs (liberar)',
-      confirmarLiberacao: 'Crear OP solo para lo que ya esta en maquina en este recorte? Cada PV+Ln vira una orden. Se descarga el XLSX. El resto del Gantt sigue sugerido.',
-      liberadasOk: '{n} OPs marcadas como creadas. Use el XLSX en el sistema.',
+      motivo_filaMaquina: 'cola de la maquina',
+      motivo_congelamento: 'horizonte congelado',
+      motivo_campanhaCor: 'campana de color/setup',
+      motivo_gargaloPessoal: 'cuello de personas',
+      motivo_semUnidade: 'unidad sin factor',
+      listaOt: 'Lista de pedidos',
+      gradeMrp: 'Grilla MRP',
+      colSeq: 'Seq',
+      colStatusOt: 'Estado OT',
+      colSaude: 'Plazo',
+      colRestricao: 'Restriccion',
+      colJanela: 'Maquina · ventana',
+      statusOt_semOt: 'Sin OT',
+      statusOt_sugerida: 'Sugerida',
+      statusOt_naMaquina: 'En maquina',
+      statusOt_otCriada: 'OT creada',
+      statusOt_encerrada: 'Cerrada',
+      saude_noPrazo: 'A tiempo',
+      saude_risco: 'Va a atrasar',
+      saude_atrasado: 'Atrasado',
+      saude_semPrograma: 'Sin programa',
+      saude_bloqueado: 'Bloqueado',
+      chipAtrasados: 'Atrasados',
+      chipRisco: 'En riesgo',
+      chipSemOt: 'Sin OT',
+      chipBloqueados: 'Bloqueados',
+      chipNoPrazo: 'A tiempo',
+      chipOtCriada: 'OT creada',
+      chipEncerradas: 'Cerradas',
+      chipTodos: 'Todos',
+      prioridadeAlterada: 'Prioridad cambiada. Recalcular el plan con el nuevo orden de produccion?',
+      recalcularPlano: 'Recalcular plan',
+      verNoGantt: 'Ver en Gantt',
+      drawerOtTitulo: 'Pedido {pv} Ln {ln}',
+      drawerSemMotivo: 'Sin restriccion: el plan cumple la fecha del cliente.',
+      dataCliente: 'Fecha del cliente',
+      liberarPlanejadas: 'Crear OTs (liberar)',
+      confirmarLiberacao: 'Crear OT solo para lo que ya esta en maquina en este recorte? Cada PV+Ln vira una orden. Se descarga el XLSX. El resto del Gantt sigue sugerido.',
+      liberadasOk: '{n} OTs marcadas como creadas. Use el XLSX en el sistema.',
       colSo: 'Numero de SO',
       colLinhaSo: 'Linea',
       kpiSemPlano: 'Sin orden',
       kpiNaMaquina: 'En maquina',
-      kpiOpCriada: 'OP creada',
+      kpiOpCriada: 'OT creada',
       kpiEncerrada: 'Cerrada',
       kpiSugerida: 'Sugerida',
       kpiEstoque: 'Saldo en stock',
@@ -5806,8 +6246,8 @@ const I18n = {
       chatDicaPlano: 'Sugiera un plan para RFID',
       chatDicaPendencias: 'Que pendientes de cadastro tenemos?',
       chatDicaCobertura: 'Que lineas del backlog aun no tienen orden?',
-      chatDicaEncerrar: 'Que OPs ya fueron creadas y cuales ya cerraron?',
-      ganttAviso: 'Arrastre solo lo sugerido. OP creada y orden en maquina (candado) no se mueven. La franja de color es el % de llenado del turno.',
+      chatDicaEncerrar: 'Que OTs ya fueron creadas y cuales ya cerraron?',
+      ganttAviso: 'Arrastre solo lo sugerido. OT creada y orden en maquina (candado) no se mueven. La franja de color es el % de llenado del turno.',
       ocupacao: 'Ocupacion',
       ocupacaoMaquinas: 'Ocupacion de maquinas',
       ocupacaoOperadores: 'Ocupacion de operadores',
@@ -6032,7 +6472,7 @@ function apiSalvarVelocidade(payload) {
 function apiSalvarOperador(payload) {
   payload = payload || {};
   const registro = {
-    id: String(payload.id || '').trim() || Util.gerarId('OP'),
+    id: String(payload.id || '').trim() || Util.gerarId('OT'),
     nome: String(payload.nome || '').trim(),
     email: String(payload.email || '').trim(),
     turno_id: String(payload.turnoId || '').trim(),
@@ -6289,6 +6729,45 @@ function apiSalvarAjuste(payload) {
   CachePainel.invalidar();
   auditar_('salvar', ABAS.ajustes, existente, registro);
   return { ok: true, chave: chave, prioridadeManual: registro.prioridade_manual };
+}
+
+/**
+ * Reordena a fila de producao (prioridade_manual 10, 20, 30...).
+ * O motor usa essa ordem no proximo Sugerir plano.
+ */
+function apiReordenarPrioridades(payload) {
+  payload = payload || {};
+  const chaves = (payload.chaves || []).map(function (c) {
+    return String(c || '').trim();
+  }).filter(function (c) { return !!c; });
+  if (chaves.length < 2) throw new Error('Informe a nova ordem das linhas.');
+
+  let usuario = '';
+  try { usuario = Session.getActiveUser().getEmail() || ''; } catch (e) {}
+  const agora = new Date();
+  const existentes = Cadastros.ajustes();
+
+  chaves.forEach(function (chave, i) {
+    const anterior = existentes[chave] || {};
+    const registro = {
+      chave: chave,
+      prioridade_manual: (i + 1) * 10,
+      observacao: anterior.observacao || '',
+      atualizado_por: usuario,
+      atualizado_em: agora,
+    };
+    const linha = localizarPorCampo_(ABAS.ajustes, 'chave', chave);
+    if (linha) Repo.atualizarRegistro(ABAS.ajustes, linha._linha, registro);
+    else Repo.acrescentar(ABAS.ajustes, [registro]);
+  });
+
+  CachePainel.invalidar();
+  Repo.limparMemoria();
+  Repo.registrarAuditoria(usuario, ORIGEM.manual, 'reordenar_prioridades', ABAS.ajustes,
+    { chaves: chaves }, { quantidade: chaves.length });
+  const plano = montarPlano(payload, new Date());
+  plano.prioridadeAlterada = true;
+  return plano;
 }
 
 function apiSalvarUnidade(payload) {
