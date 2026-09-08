@@ -4427,6 +4427,7 @@ function declaracoesFerramentasChat_() {
       description: 'Encerra OPs ja liberadas e finalizadas. Sem ids, encerra as cujo pedido saiu do backlog. Impede criar OP duplicada da mesma PV+Ln. Exige confirmacao.',
       parameters: obj({
         grupo: { type: 'STRING' },
+        id: { type: 'STRING', description: 'Id de uma OP (opcional)' },
         ids: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Ids de OP (opcional)' },
         todas: { type: 'BOOLEAN', description: 'Se true, encerra todas as LIBERADA do recorte' },
       }),
