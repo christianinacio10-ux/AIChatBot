@@ -2128,6 +2128,7 @@ function montarPlano(grupoOuFiltro, hoje) {
   let linhasSemOrdem = 0;
   let linhasSugeridas = 0;
   let linhasNaMaquina = 0;
+  let linhasOpCriada = 0;
   let linhasEncerradas = 0;
   itens.forEach(function (it) {
     pecasDemanda += it.totalDemanda;
