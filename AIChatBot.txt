@@ -266,6 +266,8 @@ const SEED_CONFIG = [
   ['horizonte_dias_detalhado', '28', 'Dias com coluna diaria na tela Plano'],
   ['horizonte_semanas', '16', 'Total de semanas do horizonte de planejamento'],
   ['agrupamento_janela_dias', '7', 'Quanto o motor pode adiantar uma demanda para formar campanha (modo jit)'],
+  ['campanha_cor_ativa', 'SIM', 'Agrupa pedidos da mesma cor na RMT (setup zero e puxa para a campanha)'],
+  ['campanha_cor_janela_dias', '7', 'Dias a frente que o motor pode puxar um pedido da mesma cor'],
   ['otimizacao_modo', 'antecipar', 'antecipar = produz o quanto antes dentro da janela; jit = colado na data'],
   ['otimizacao_semanas_antecipacao', '2', 'Semanas de backlog liberadas para antecipar producao'],
   ['otimizacao_folga_dias', '2', 'Dias de folga antes da data do cliente fora da janela de antecipacao'],
@@ -2145,7 +2147,7 @@ function montarNavegacaoPlano_(grupo, techs, maqs, demandasGrupo) {
   const maqMapa = {};
   Cadastros.maquinas().forEach(function (m) {
     if (grupo && m.grupo !== grupo) return;
-    const row = { id: m.id, nome: m.nome, tecnologiaIds: [], linhas: 0, pecas: 0 };
+    const row = { id: m.id, nome: m.nome, tecnologiaIds: [], linhas: 0, pecas: 0, consideraCor: !!m.consideraCor };
     maqMapa[m.id] = row;
     maqLista.push(row);
   });
@@ -2431,6 +2433,7 @@ function montarPlano(grupoOuFiltro, hoje) {
     pedidos: pedidos,
     otimizacao: politicaOtimizacao_(Cadastros.config(), hoje || new Date()).painel,
     congelamento: congelaPlano.painel,
+    campanha: painelCampanhaCor_(Cadastros.config(), escopo, filtroGrupo, maqs),
     resumo: {
       itens: itens.length,
       linhas: linhasDemanda,
@@ -3065,6 +3068,15 @@ function apiSalvarOtimizacao(payload) {
   if (semanas != null && semanas >= 0) gravarConfig_('otimizacao_semanas_antecipacao', Math.round(semanas));
   if (folga != null && folga >= 0) gravarConfig_('otimizacao_folga_dias', Math.round(folga));
   if (congelarDias != null && congelarDias >= 0) gravarConfig_('congelar_dias', Math.round(congelarDias));
+  if (payload.campanhaAtiva != null) {
+    gravarConfig_('campanha_cor_ativa', Util.paraBooleano(payload.campanhaAtiva) ? SIM : NAO);
+  }
+  if (payload.campanhaJanelaDias != null) {
+    const janelaCor = Util.paraNumero(payload.campanhaJanelaDias);
+    if (janelaCor != null && janelaCor >= 0) {
+      gravarConfig_('campanha_cor_janela_dias', Math.round(janelaCor));
+    }
+  }
 
   CachePainel.invalidar();
   Repo.limparMemoria();
@@ -3088,6 +3100,7 @@ function montarSugestao(grupoOuFiltro, hoje) {
   const config = Cadastros.config();
   const otim = politicaOtimizacao_(config, hoje);
   const congela = politicaCongelamento_(config, hoje);
+  const campanha = politicaCampanhaCor_(config);
   const janela = otim.modo === MODO_OTIMIZACAO.antecipar
     ? otim.diasAntecipacao
     : (config.numero('agrupamento_janela_dias', 7) || 7);
@@ -3168,7 +3181,7 @@ function montarSugestao(grupoOuFiltro, hoje) {
   demandas.forEach(function (d) {
     d.prioridadeManual = (ajustes[d.chave] || {}).prioridadeManual;
     const cad = itensCad[d.itemCodigo] || {};
-    d.cor = cad.cor || '';
+    d.cor = cad.cor || Util.extrairCor(cad.descricao) || '';
   });
 
   const ordens = Cadastros.ordens();
@@ -3298,7 +3311,7 @@ function montarSugestao(grupoOuFiltro, hoje) {
     const restantes = fila.slice();
 
     while (restantes.length) {
-      const job = escolherProximoJob_(restantes, ultimoItem, ultimaCor, janela, hoje);
+      const job = escolherProximoJob_(restantes, ultimoItem, ultimaCor, janela, campanha, hoje);
       const idx = restantes.indexOf(job);
       if (idx >= 0) restantes.splice(idx, 1);
 
@@ -3343,7 +3356,7 @@ function montarSugestao(grupoOuFiltro, hoje) {
         continue;
       }
 
-      const setup = setupJob_(maq, job, ultimoItem, ultimaCor, vel);
+      const setup = setupJob_(maq, job, ultimoItem, ultimaCor, vel, campanha);
       const duracao = setup + (qty / pecasHora) * 60;
       const busca = mpEstado.liberacao && mpEstado.liberacao > hoje ? mpEstado.liberacao : hoje;
       const slot = alocarConformeOtimizacao_(
@@ -3457,6 +3470,7 @@ function montarSugestao(grupoOuFiltro, hoje) {
     geradoEm: Util.formatarISO(hoje),
     otimizacao: otim.painel,
     congelamento: congela.painel,
+    campanha: painelCampanhaCor_(config, escopo, filtroGrupo, mapaMaqs),
     propostas: propostas,
     diagnosticos: diagnosticos,
     avisos: avisos.concat(ignoradas).slice(0, 40),
@@ -3772,7 +3786,7 @@ function montarLinhasLiberacao_(ordens, demandas, idioma) {
   return [cabecalho].concat(corpo);
 }
 
-function escolherProximoJob_(restantes, ultimoItem, ultimaCor, janela, hoje) {
+function escolherProximoJob_(restantes, ultimoItem, ultimaCor, janela, campanha, hoje) {
   if (!restantes.length) return null;
   const cabeca = restantes[0];
   if (!ultimoItem) return cabeca;
@@ -3783,12 +3797,13 @@ function escolherProximoJob_(restantes, ultimoItem, ultimaCor, janela, hoje) {
     if (desejada && desejada > limite && desejada > (cabeca.dataDesejada || '')) continue;
     if (j.itemCodigo === ultimoItem) return j;
   }
-  if (ultimaCor) {
+  if (campanha && campanha.ativa && ultimaCor) {
+    const limiteCor = Util.chaveDia(Util.somarDias(hoje, campanha.janelaDias || 0));
     for (let i = 0; i < restantes.length; i++) {
       const j = restantes[i];
       if (j.cor && j.cor === ultimaCor) {
         const desejada = j.dataDesejada || '';
-        if (!desejada || desejada <= limite) return j;
+        if (!desejada || desejada <= limiteCor) return j;
       }
     }
   }
@@ -3801,9 +3816,10 @@ function velocidadeJob_(job, vel, maq) {
   return maq.velocidadeReferencia || 0;
 }
 
-function setupJob_(maq, job, ultimoItem, ultimaCor, vel) {
+function setupJob_(maq, job, ultimoItem, ultimaCor, vel, campanha) {
   if (ultimoItem && job.itemCodigo === ultimoItem) return 0;
-  if (maq.consideraCor && ultimaCor && job.cor && job.cor === ultimaCor) return 0;
+  const usaCor = maq.consideraCor && (!campanha || campanha.ativa);
+  if (usaCor && ultimaCor && job.cor && job.cor === ultimaCor) return 0;
   const v = vel.buscar(job.itemCodigo, maq.id);
   if (v && v.setupPadraoMin) return v.setupPadraoMin;
   return maq.setupPadraoMin || 0;
@@ -3868,6 +3884,40 @@ function estadoMp_(itemCodigo, lista, hoje, fimHorizonte) {
     if (!liberacao || livre > liberacao) liberacao = livre;
   });
   return { bloqueadaSemRetorno: bloqueadaSemRetorno, liberacao: liberacao };
+}
+
+/**
+ * Campanha de cor da RMT. A cor e o ultimo token da descricao (WHITE, BLACK…).
+ * Mesma cor zera o setup; o motor puxa pedidos da janela para ficar na cor.
+ * `campanha_cor_ativa` liga/desliga isso sem mexer no cadastro da maquina.
+ */
+function politicaCampanhaCor_(config) {
+  const ativa = config.booleano('campanha_cor_ativa', true);
+  const janelaDias = Math.max(0, Math.round(config.numero('campanha_cor_janela_dias', 7) || 0));
+  return { ativa: ativa, janelaDias: janelaDias };
+}
+
+function recorteTemCampanhaCor_(escopo, filtroGrupo, maqs) {
+  const lista = [];
+  Object.keys(maqs || {}).forEach(function (id) { lista.push(maqs[id]); });
+  if (escopo && escopo.maquinaId) {
+    const m = maqs[escopo.maquinaId];
+    return !!(m && m.consideraCor);
+  }
+  return lista.some(function (m) {
+    if (!m || !m.consideraCor) return false;
+    if (filtroGrupo && m.grupo && m.grupo !== filtroGrupo) return false;
+    return true;
+  });
+}
+
+function painelCampanhaCor_(config, escopo, filtroGrupo, maqs) {
+  const pol = politicaCampanhaCor_(config);
+  return {
+    ativa: pol.ativa,
+    janelaDias: pol.janelaDias,
+    visivel: recorteTemCampanhaCor_(escopo, filtroGrupo, maqs),
+  };
 }
 
 /**
@@ -5729,6 +5779,11 @@ const I18n = {
       motivo_filaMaquina: 'fila da maquina',
       motivo_congelamento: 'horizonte congelado',
       motivo_campanhaCor: 'campanha de cor/setup',
+      campanhaCorTitulo: 'Campanha de cor (RMT)',
+      campanhaCorAtiva: 'Agrupar por cor',
+      campanhaCorJanela: 'Janela da campanha (dias)',
+      tipCampanhaCor: 'Na RMT a cor e o ultimo token da descricao (WHITE, BLACK, RED…). Mesma cor zera o setup. Desligue para sequenciar so por data/prioridade.',
+      tipCampanhaJanela: 'Quantos dias a frente o motor pode puxar um pedido da mesma cor para ficar na campanha.',
       motivo_gargaloPessoal: 'gargalo de pessoas',
       motivo_semUnidade: 'unidade sem fator',
       listaOt: 'Lista de pedidos',
@@ -6068,6 +6123,11 @@ const I18n = {
       motivo_filaMaquina: 'machine queue',
       motivo_congelamento: 'frozen horizon',
       motivo_campanhaCor: 'color/setup campaign',
+      campanhaCorTitulo: 'Color campaign (RMT)',
+      campanhaCorAtiva: 'Group by color',
+      campanhaCorJanela: 'Campaign window (days)',
+      tipCampanhaCor: 'On RMT the color is the last token of the description (WHITE, BLACK, RED…). Same color means zero setup. Turn off to sequence by date/priority only.',
+      tipCampanhaJanela: 'How many days ahead the engine may pull an order of the same color into the campaign.',
       motivo_gargaloPessoal: 'people bottleneck',
       motivo_semUnidade: 'unit without factor',
       listaOt: 'Order list',
@@ -6407,6 +6467,11 @@ const I18n = {
       motivo_filaMaquina: 'cola de la maquina',
       motivo_congelamento: 'horizonte congelado',
       motivo_campanhaCor: 'campana de color/setup',
+      campanhaCorTitulo: 'Campana de color (RMT)',
+      campanhaCorAtiva: 'Agrupar por color',
+      campanhaCorJanela: 'Ventana de campana (dias)',
+      tipCampanhaCor: 'En la RMT el color es el ultimo token de la descripcion (WHITE, BLACK, RED…). Mismo color = setup cero. Apague para secuenciar solo por fecha/prioridad.',
+      tipCampanhaJanela: 'Cuantos dias adelante el motor puede traer un pedido del mismo color a la campana.',
       motivo_gargaloPessoal: 'cuello de personas',
       motivo_semUnidade: 'unidad sin factor',
       listaOt: 'Lista de pedidos',
