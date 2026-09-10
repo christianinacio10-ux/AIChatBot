@@ -50,17 +50,30 @@ const Util = {
 };
 
 const vm = require('vm');
-const ctx = { Util: Util };
+const ctx = {
+  Util: Util,
+  TIPO_ORDEM: { planejada: 'PLANEJADA', liberada: 'LIBERADA', encerrada: 'ENCERRADA' },
+  MODO_OTIMIZACAO: { antecipar: 'antecipar', jit: 'jit' },
+};
 vm.createContext(ctx);
 vm.runInContext(
+  extractFn('isoDia_') + '\n' +
+  extractFn('indicePeriodo_') + '\n' +
+  extractFn('ordemEncerrada_') + '\n' +
+  extractFn('ordemFirme_') + '\n' +
+  extractFn('politicaCongelamento_') + '\n' +
+  extractFn('politicaOtimizacao_') + '\n' +
   extractFn('jobPiorQueCabeca_') + '\n' +
   extractFn('jobNaJanelaCabeca_') + '\n' +
   extractFn('escolherProximoJob_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
-const jobPiorQueCabeca_ = ctx.jobPiorQueCabeca_;
-const jobNaJanelaCabeca_ = ctx.jobNaJanelaCabeca_;
+const ordemFirme_ = ctx.ordemFirme_;
+const isoDia_ = ctx.isoDia_;
+const indicePeriodo_ = ctx.indicePeriodo_;
+const politicaCongelamento_ = ctx.politicaCongelamento_;
+const politicaOtimizacao_ = ctx.politicaOtimizacao_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -140,6 +153,70 @@ function antecipa(jobLinha) {
 ok('job na janela de 2 semanas e ASAP', antecipa(job('1', 'A', '2026-09-20')));
 ok('job fora das 2 semanas nao e ASAP', !antecipa(job('2', 'A', '2026-10-01')));
 ok('job sem data e ASAP (elegivel)', antecipa(job('3', 'A', '')));
+
+const cabeca15 = job('S|15', 'P5EB1593', '2026-09-15', 10);
+const out01 = job('S|01', 'P5EB1593', '2026-10-01', 10);
+ok(
+  'mesmo item 01/10 nao fura cabeca 15/09',
+  escolherProximoJob_([cabeca15, out01], 'P5EB1593', '', janela, null, hoje) === cabeca15
+);
+
+ok('isoDia_ corta datetime', isoDia_('2026-09-16T08:00:00') === '2026-09-16');
+ok('isoDia_ aceita Date', isoDia_(new Date(2026, 8, 15)) === '2026-09-15');
+const horiz = [
+  { inicio: '2026-09-10', fim: '2026-09-10' },
+  { inicio: '2026-09-16', fim: '2026-09-16' },
+  { inicio: '2026-10-01', fim: '2026-10-01' },
+];
+ok('MRP nao joga demanda com hora no ultimo bucket', indicePeriodo_(horiz, '2026-09-16T00:00:00') === 1);
+
+const horizAntes = [
+  { inicio: '2016-09-12', fim: '2026-09-09' },
+  { inicio: '2026-09-10', fim: '2026-09-10' },
+  { inicio: '2026-12-28', fim: '2036-12-24' },
+];
+ok(
+  'oferta de 10/09 com hora cai no dia, nao no DEPOIS',
+  indicePeriodo_(horizAntes, '2026-09-10T08:00:00') === 1
+);
+ok(
+  'data antes do horizonte cai no ANTES, nao no DEPOIS',
+  indicePeriodo_(horizAntes, '2026-09-01') === 0
+);
+
+ok(
+  'congelar 0 nao trava PLANEJADA de hoje',
+  !ordemFirme_({ tipo: 'PLANEJADA', travada: false, inicio: hoje }, { dias: 0, limite: null })
+);
+ok(
+  'LIBERADA continua firme mesmo com congelar 0',
+  !!ordemFirme_({ tipo: 'LIBERADA', travada: false, inicio: hoje }, { dias: 0, limite: null })
+);
+
+function cfg(mapa) {
+  return {
+    numero: function (k, def) { return mapa[k] != null ? mapa[k] : def; },
+    texto: function (k, def) { return mapa[k] != null ? mapa[k] : def; },
+    booleano: function (k, def) { return mapa[k] != null ? !!mapa[k] : def; },
+  };
+}
+
+const congela0 = politicaCongelamento_(cfg({ congelar_dias: 0, congelar_ao_aplicar: true }), hoje);
+ok('congelar 0 nao cria limite de hoje', congela0.limite == null && congela0.dias === 0);
+ok(
+  'PLANEJADA de hoje nao e firme com politica congelar 0',
+  !ordemFirme_({ tipo: 'PLANEJADA', travada: false, inicio: hoje }, congela0)
+);
+
+const otim = politicaOtimizacao_(cfg({
+  otimizacao_modo: 'antecipar',
+  otimizacao_semanas_antecipacao: 2,
+  otimizacao_folga_dias: 2,
+}), hoje);
+ok('15/09 com datetime e ASAP nas 2 semanas', otim.antecipa({ dataDesejada: '2026-09-15T00:00:00' }));
+ok('15/09 como Date e ASAP nas 2 semanas', otim.antecipa({ dataDesejada: new Date(2026, 8, 15) }));
+ok('01/10 com datetime nao e ASAP', !otim.antecipa({ dataDesejada: '2026-10-01T08:00:00' }));
+ok('01/10 como Date nao e ASAP', !otim.antecipa({ dataDesejada: new Date(2026, 9, 1) }));
 
 function projetar(demanda, oferta, estoque) {
   const out = [];

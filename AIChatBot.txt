@@ -275,7 +275,7 @@ const SEED_CONFIG = [
   ['flexibility_meta_pct', '95', 'Meta de atendimento contra a data desejada do cliente'],
   ['reliability_meta_pct', '98', 'Meta de atendimento contra a data prometida'],
   ['gemini_modelo', 'gemini-2.5-flash', 'Modelo usado pelo chatbot'],
-  ['congelar_dias', '14', 'Ordens com inicio neste horizonte ficam na maquina: o motor nao as remexe'],
+  ['congelar_dias', '14', '0 = nao congela por data (PLANEJADA pode ser reprogramada). LIBERADA nunca se remexe'],
   ['congelar_ao_aplicar', 'SIM', 'Ao aplicar a sugestao, trava as ordens que entram no horizonte de congelamento'],
 ];
 
@@ -2652,29 +2652,45 @@ function zeros_(n) {
 }
 
 function dataDemandaIso_(d) {
-  return d.dataDesejada || d.dataPrometida || d.dataVencimento || '';
+  return isoDia_(d.dataDesejada || d.dataPrometida || d.dataVencimento || '');
+}
+
+function dataOrdemIso_(o) {
+  return isoDia_(o.fim) || isoDia_(o.inicio);
+}
+
+function isoDia_(valor) {
+  if (valor == null || valor === '') return '';
+  /**
+   * Date de outro realm (teste Node) ou Date do Sheets: nao usar instanceof.
+   */
+  if (typeof valor.getFullYear === 'function' && typeof valor.getMonth === 'function') {
+    return Util.chaveDia(valor);
+  }
+  const m = String(valor).match(/(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : '';
+}
+
+function indicePeriodo_(horizonte, iso) {
+  iso = isoDia_(iso);
+  if (!iso || !horizonte || !horizonte.length) return -1;
+  for (let i = 0; i < horizonte.length; i++) {
+    const b = horizonte[i];
+    if (iso >= b.inicio && iso <= b.fim) return i;
+  }
+  /**
+   * Sem match: data antes do primeiro bucket vai para ANTES (0), nao para
+   * DEPOIS. O fallback antigo jogava tudo no ultimo periodo e o projetado
+   * furava no meio da grade.
+   */
+  if (iso < horizonte[0].inicio) return 0;
+  return horizonte.length - 1;
 }
 
 function demandaNoPeriodo_(d, bucket) {
   const iso = dataDemandaIso_(d);
   if (!iso) return false;
   return iso >= bucket.inicio && iso <= bucket.fim;
-}
-
-function dataOrdemIso_(o) {
-  const fim = o.fim ? Util.chaveDia(o.fim instanceof Date ? o.fim : Util.paraData(o.fim)) : '';
-  if (fim) return fim;
-  const ini = o.inicio ? Util.chaveDia(o.inicio instanceof Date ? o.inicio : Util.paraData(o.inicio)) : '';
-  return ini;
-}
-
-function indicePeriodo_(horizonte, iso) {
-  if (!iso) return -1;
-  for (let i = 0; i < horizonte.length; i++) {
-    const b = horizonte[i];
-    if (iso >= b.inicio && iso <= b.fim) return i;
-  }
-  return horizonte.length ? horizonte.length - 1 : -1;
 }
 
 function divergenciaSoLinha_(l, cob) {
@@ -2928,16 +2944,21 @@ function politicaCongelamento_(config, hoje) {
   hoje = Util.inicioDoDia(hoje || new Date());
   const dias = Math.max(0, Math.round(config.numero('congelar_dias', 14) || 0));
   const aoAplicar = config.booleano('congelar_ao_aplicar', true);
-  const limite = Util.somarDias(hoje, dias);
+  /**
+   * 0 dias = nao congela por data. Antes o limite virava "hoje" e toda OT
+   * que o motor punha no dia corrente virava "na maquina" e nunca mais saia
+   * da frente — o 01/10 furava o 15/09.
+   */
+  const limite = dias > 0 ? Util.somarDias(hoje, dias) : null;
   return {
     dias: dias,
-    aoAplicar: aoAplicar,
+    aoAplicar: aoAplicar && dias > 0,
     hoje: hoje,
     limite: limite,
     painel: {
       dias: dias,
-      aoAplicar: aoAplicar,
-      limite: Util.chaveDia(limite),
+      aoAplicar: aoAplicar && dias > 0,
+      limite: limite ? Util.chaveDia(limite) : '',
     },
   };
 }
@@ -2945,7 +2966,8 @@ function politicaCongelamento_(config, hoje) {
 /**
  * Ordem firme: ja esta na maquina. O motor ocupa o slot e nao a substitui.
  * LIBERADA = OT criada (ainda em producao). Travada = congelada na mao.
- * Inicio dentro de congelar_dias = carregada no horizonte curto.
+ * Inicio dentro de congelar_dias (>0) = carregada no horizonte curto.
+ * congelar_dias=0 nao congela por data: PLANEJADA de hoje continua reprogramavel.
  * ENCERRADA nao e firme: ja saiu da maquina.
  */
 function ordemEncerrada_(o) {
@@ -2956,7 +2978,7 @@ function ordemFirme_(o, congela) {
   if (!o || ordemEncerrada_(o)) return false;
   if (o.tipo === TIPO_ORDEM.liberada) return true;
   if (o.travada) return true;
-  if (!congela || !congela.limite) return false;
+  if (!congela || !congela.dias || !congela.limite) return false;
   const ini = Util.paraData(o.inicio);
   if (!ini) return false;
   return Util.inicioDoDia(ini).getTime() <= congela.limite.getTime();
@@ -3310,17 +3332,25 @@ function montarSugestao(grupoOuFiltro, hoje) {
   const travadas = [];
   const cobertoFirme = {};
   ordens.forEach(function (o) {
-    if (ordemCobreDemanda_(o, congela, recalcularAbertas)) {
+    const cobre = ordemCobreDemanda_(o, congela, recalcularAbertas);
+    if (cobre) {
       cobertoFirme[o.chaveDemanda] = (cobertoFirme[o.chaveDemanda] || 0) + (o.quantidade || 0);
     }
-    if (!ordemFirme_(o, congela)) return;
+    /**
+     * Ocupa o calendário se a ordem cobre a PV+Ln neste recálculo.
+     * Recalcular novas: PLANEJADA existente continua no slot (senão o 15/09
+     * nascia em cima do 01/10). Recalcular abertas: só LIBERADA/travada/
+     * congelada ocupam; o resto da PLANEJADA volta pra fila.
+     */
+    if (!cobre && !ordemFirme_(o, congela)) return;
+    if (ordemEncerrada_(o)) return;
     if (!ocupado[o.maquinaId]) ocupado[o.maquinaId] = {};
     consumirOcupacao_(ocupado[o.maquinaId], o.inicio, o.fim, o.setupMin, duracaoOrdemMin_(o, vel, maqs));
     const maqTravada = mapaMaqs[o.maquinaId];
     if (maqTravada) {
       consumirPessoasOrdem_(o, maqTravada, vel, maqs, ops, habs, turnos, excecoes, ocupado.__pessoas);
     }
-    travadas.push(o.chaveDemanda);
+    if (ordemFirme_(o, congela)) travadas.push(o.chaveDemanda);
   });
 
   const demandaPorItem = {};
@@ -3414,9 +3444,10 @@ function montarSugestao(grupoOuFiltro, hoje) {
     let ultimoItem = '';
     let ultimaCor = '';
     const firmesMaq = ordens.filter(function (o) {
-      return o.maquinaId === maq.id && ordemFirme_(o, congela);
+      if (o.maquinaId !== maq.id || ordemEncerrada_(o)) return false;
+      return ordemFirme_(o, congela) || ordemCobreDemanda_(o, congela, recalcularAbertas);
     }).sort(function (a, b) {
-      return String(a.fim ? Util.chaveDia(a.fim) : '').localeCompare(String(b.fim ? Util.chaveDia(b.fim) : ''));
+      return String(dataOrdemIso_(a)).localeCompare(String(dataOrdemIso_(b)));
     });
     if (firmesMaq.length) {
       const ultima = firmesMaq[firmesMaq.length - 1];
@@ -3558,9 +3589,9 @@ function montarSugestao(grupoOuFiltro, hoje) {
     vel, turnos, excecoes, ops, habs, itensCad, estoque, horizonteMrp, hoje, fimHorizonte, congela);
   propostas.forEach(function (p) {
     if (!p.reparoMrp) return;
-    const desejada = p.dataDesejada || p.dataPrometida || '';
-    const prometida = p.dataPrometida || desejada;
-    const fimIso = String(p.fim || '').slice(0, 10);
+    const desejada = isoDia_(p.dataDesejada || p.dataPrometida || '');
+    const prometida = isoDia_(p.dataPrometida || desejada);
+    const fimIso = isoDia_(p.fim);
     let estado = 'noPrazo';
     if (prometida && fimIso > prometida) estado = 'atrasado';
     else if (desejada && fimIso > desejada) estado = 'risco';
@@ -3676,7 +3707,7 @@ function aplicarSugestao_(sugestao) {
     return p && p.chave_demanda && !chavesComOp[p.chave_demanda];
   }).map(function (p) {
     const ini = Util.paraData(p.inicio);
-    const firmeNova = congela.aoAplicar && ini &&
+    const firmeNova = congela.aoAplicar && congela.limite && ini &&
       Util.inicioDoDia(ini).getTime() <= congela.limite.getTime();
     return {
       id: p.id,
@@ -4110,8 +4141,8 @@ function jobPiorQueCabeca_(j, cabeca) {
 }
 
 function jobNaJanelaCabeca_(j, cabeca, janelaDias) {
-  const cabecaIso = cabeca.dataDesejada || cabeca.dataPrometida || '';
-  const jobIso = j.dataDesejada || j.dataPrometida || '';
+  const cabecaIso = isoDia_(cabeca.dataDesejada || cabeca.dataPrometida || '');
+  const jobIso = isoDia_(j.dataDesejada || j.dataPrometida || '');
   if (!cabecaIso || !jobIso) return true;
   const base = Util.paraData(cabecaIso);
   if (!base) return true;
@@ -4166,8 +4197,10 @@ function consumirPessoasOrdem_(o, maq, vel, maqs, ops, habs, turnos, excecoes, o
   let resto = duracaoOrdemMin_(o, vel, maqs);
   if (resto <= 0) return;
   let d = Util.inicioDoDia(Util.paraData(o.inicio) || new Date());
+  const fim = Util.paraData(o.fim);
+  const limite = fim ? Util.inicioDoDia(fim) : Util.somarDias(d, 90);
   let n = 0;
-  while (resto > 0.01 && n++ < 90) {
+  while (resto > 0.01 && n++ < 90 && d.getTime() <= limite.getTime()) {
     const cap = minutosEfetivosMaquina_(maq, d, turnos, excecoes, ops, habs, ocupPessoas);
     const usa = Math.min(resto, cap);
     if (usa > 0.01) {
@@ -4255,7 +4288,7 @@ function politicaOtimizacao_(config, hoje) {
     painel: { modo: modo, semanas: semanas, folgaDias: folgaDias, limite: limiteIso },
     antecipa: function (job) {
       if (modo !== MODO_OTIMIZACAO.antecipar) return false;
-      const iso = job.dataDesejada || job.dataPrometida || '';
+      const iso = isoDia_(job.dataDesejada || job.dataPrometida || '');
       return !iso || iso <= limiteIso;
     },
   };
@@ -4381,7 +4414,7 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
       itemDe_(o.itemCodigo).oferta[idx] += o.quantidade || 0;
     });
     (propostas || []).forEach(function (p) {
-      const iso = String(p.fim || '').slice(0, 10);
+      const iso = isoDia_(p.fim);
       const idx = indicePeriodo_(horizonte, iso);
       if (idx < 0) return;
       itemDe_(p.item_codigo).oferta[idx] += p.quantidade || 0;
@@ -4413,7 +4446,7 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
   }).forEach(function (p) {
     const buraco = porBuraco[p.item_codigo];
     if (!buraco) return;
-    const fimIso = String(p.fim || '').slice(0, 10);
+    const fimIso = isoDia_(p.fim);
     const fimIdx = indicePeriodo_(horizonte, fimIso);
     if (fimIdx >= 0 && fimIdx <= buraco.idx) return;
     const maq = mapaMaqs[p.maquina_id];
@@ -6214,7 +6247,7 @@ const I18n = {
       tipOtimModo: 'Antecipar: produz o quanto antes nas semanas da janela. Colado na data: termina com folga antes da data do cliente.',
       tipOtimSemanas: 'Quantas semanas de backlog o motor pode puxar para agora.',
       tipOtimFolga: 'Dias de folga antes da data do cliente no modo colado na data.',
-      tipOtimCongelar: 'Ordens com inicio neste horizonte ficam na maquina, nos dois modos.',
+      tipOtimCongelar: '0 = o motor pode remexer PLANEJADA de qualquer dia. LIBERADA (OT criada) nunca se move. Use Recalcular novas + abertas para reprogramar a fila.',
       congelarDias: 'Congelar (dias)',
       congelarDica: 'MTO: uma PV+Ln = uma OT. O que ja esta na maquina (congelado ou OT criada) nao se remexe. Backlog novo so entra no tempo livre.',
       congelarNaMaquina: 'Congelar na maquina',
@@ -6586,7 +6619,7 @@ const I18n = {
       tipOtimModo: 'Pull forward: produce as soon as possible in the window. On-date: finish with slack before the customer date.',
       tipOtimSemanas: 'How many weeks of backlog the engine may pull into now.',
       tipOtimFolga: 'Slack days before the customer date in on-date mode.',
-      tipOtimCongelar: 'Orders starting in this horizon stay on the machine, in both modes.',
+      tipOtimCongelar: '0 = the engine may move planned OTs on any day. Released OTs never move. Use Recalculate new + open to rebuild the queue.',
       congelarDias: 'Freeze (days)',
       congelarDica: 'MTO: one SO+Ln = one OT. What is already on the machine (frozen or created) does not move. New backlog only uses free time.',
       congelarNaMaquina: 'Freeze on machine',
@@ -6958,7 +6991,7 @@ const I18n = {
       tipOtimModo: 'Adelantar: produce cuanto antes en las semanas de la ventana. Pegado a la fecha: termina con holgura antes de la fecha del cliente.',
       tipOtimSemanas: 'Cuantas semanas de backlog el motor puede traer a ahora.',
       tipOtimFolga: 'Dias de holgura antes de la fecha del cliente en el modo pegado a la fecha.',
-      tipOtimCongelar: 'Ordenes con inicio en este horizonte quedan en maquina, en ambos modos.',
+      tipOtimCongelar: '0 = el motor puede mover PLANEJADA de cualquier dia. LIBERADA nunca se mueve. Use Recalcular nuevas + abiertas para rearmar la cola.',
       congelarDias: 'Congelar (dias)',
       congelarDica: 'MTO: una PV+Ln = una OT. Lo que ya esta en maquina (congelado u OT creada) no se mueve. El backlog nuevo solo usa tiempo libre.',
       congelarNaMaquina: 'Congelar en maquina',
