@@ -6380,9 +6380,15 @@ const I18n = {
       alertaSemHabilidades: 'Operadores sem matriz de habilidade. Sem habilidade na maquina, ela nao e programada.',
       alertaMaquinaSemOperador: '{maquina}: nenhum operador habilitado.',
       alertaSemVelocidadeItem: 'Nenhuma velocidade por item. O motor usara a referencia da maquina.',
-      maquinasDica: 'Velocidade e setup vazios de proposito: inventar numero distorce o plano. Preencha aqui. Use Editar na lista ou Nova maquina. Modelo CSV baixa o cabecalho para carga em lote.',
-      modeloCsv: 'Baixar modelo CSV',
-      carregarCsv: 'Carregar CSV',
+      maquinasDica: 'Velocidade e setup vazios de proposito: inventar numero distorce o plano. Preencha aqui. Use Editar na lista ou Nova maquina. Modelo Excel baixa o cabecalho para carga em lote.',
+      modeloCsv: 'Baixar modelo Excel',
+      carregarCsv: 'Carregar Excel',
+      modeloExcel: 'Baixar modelo Excel',
+      carregarExcel: 'Carregar Excel',
+      csvNaoAceito: 'Use o modelo Excel (.xlsx).',
+      nSelecionadas: '{n} selecionadas',
+      habResumoTec: '{tec} · {n} maquinas',
+      placeholderIdMaquina: 'ex.: ADTP 1',
       importacaoCadastroOk: '{novas} novas · {atualizadas} atualizadas · {erros} com erro',
       novaMaquina: 'Nova maquina',
       ordemCadastro: 'Ordem na lista',
@@ -6746,9 +6752,15 @@ const I18n = {
       alertaSemHabilidades: 'Operators have no skill matrix. Without a skill on the machine, it will not be scheduled.',
       alertaMaquinaSemOperador: '{maquina}: no qualified operator.',
       alertaSemVelocidadeItem: 'No item speeds. The engine will use machine reference.',
-      maquinasDica: 'Speed and setup are blank on purpose: made-up numbers distort the plan. Use Edit in the list or New machine. The CSV template is for bulk load.',
-      modeloCsv: 'Download CSV template',
-      carregarCsv: 'Upload CSV',
+      maquinasDica: 'Speed and setup are blank on purpose: made-up numbers distort the plan. Use Edit in the list or New machine. The Excel template is for bulk load.',
+      modeloCsv: 'Download Excel template',
+      carregarCsv: 'Upload Excel',
+      modeloExcel: 'Download Excel template',
+      carregarExcel: 'Upload Excel',
+      csvNaoAceito: 'Use the Excel template (.xlsx).',
+      nSelecionadas: '{n} selected',
+      habResumoTec: '{tec} · {n} machines',
+      placeholderIdMaquina: 'e.g. ADTP 1',
       importacaoCadastroOk: '{novas} new · {atualizadas} updated · {erros} with errors',
       novaMaquina: 'New machine',
       ordemCadastro: 'List order',
@@ -7112,9 +7124,15 @@ const I18n = {
       alertaSemHabilidades: 'Operadores sin matriz de habilidad. Sin habilidad en la maquina, no se programa.',
       alertaMaquinaSemOperador: '{maquina}: ningun operador habilitado.',
       alertaSemVelocidadeItem: 'Ninguna velocidad por item. El motor usara la referencia de la maquina.',
-      maquinasDica: 'Velocidad y setup vacios a proposito: inventar numeros distorsiona el plan. Use Editar en la lista o Nueva maquina. El modelo CSV sirve para carga masiva.',
-      modeloCsv: 'Descargar modelo CSV',
-      carregarCsv: 'Cargar CSV',
+      maquinasDica: 'Velocidad y setup vacios a proposito: inventar numeros distorsiona el plan. Use Editar en la lista o Nueva maquina. El modelo Excel sirve para carga masiva.',
+      modeloCsv: 'Descargar modelo Excel',
+      carregarCsv: 'Cargar Excel',
+      modeloExcel: 'Descargar modelo Excel',
+      carregarExcel: 'Cargar Excel',
+      csvNaoAceito: 'Use el modelo Excel (.xlsx).',
+      nSelecionadas: '{n} seleccionadas',
+      habResumoTec: '{tec} · {n} maquinas',
+      placeholderIdMaquina: 'ej.: ADTP 1',
       importacaoCadastroOk: '{novas} nuevas · {atualizadas} actualizadas · {erros} con error',
       novaMaquina: 'Nueva maquina',
       ordemCadastro: 'Orden en la lista',
@@ -7206,7 +7224,7 @@ function apiSalvarTecnologia(payload) {
   });
 
   auditar_('salvar', ABAS.tecnologias, existente, payload);
-  return finalizarSalvoCadastro_(payload);
+  return finalizarSalvoCadastro_(payload, 'tecnologia', existente.id);
 }
 
 function apiSalvarMaquina(payload) {
@@ -7276,7 +7294,7 @@ function apiSalvarItem(payload) {
   }
 
   auditar_('salvar', ABAS.itens, existente, registro);
-  return finalizarSalvoCadastro_(payload);
+  return finalizarSalvoCadastro_(payload, 'item', registro.codigo);
 }
 
 function apiExcluirItem(payload) {
@@ -7289,9 +7307,8 @@ function apiExcluirItem(payload) {
     return String(v.item_codigo).trim() === codigo;
   }).map(function (v) { return v._linha; }));
 
-  CachePainel.invalidar();
   auditar_('excluir', ABAS.itens, existente, null);
-  return montarPacoteCadastros_();
+  return finalizarExclusaoCadastro_('item', codigo);
 }
 
 /**
@@ -7347,14 +7364,13 @@ function apiSalvarVelocidade(payload) {
   const item = String(payload.item || payload.codigo || '').trim();
   if (!item) throw new Error('Informe o codigo do item.');
   upsertVelocidade_(item, payload.maquinaId || '*', payload.velocidadeHora, payload.setupPadraoMin);
-  CachePainel.invalidar();
-  return montarPacoteCadastros_();
+  return finalizarSalvoCadastro_(payload, 'item', item);
 }
 
 function apiSalvarOperador(payload) {
   payload = payload || {};
   const registro = {
-    id: String(payload.id || '').trim() || Util.gerarId('OPR'),
+    id: String(payload.id || '').trim() || slugIdCadastro_(payload.nome, 'OPR'),
     nome: String(payload.nome || '').trim(),
     email: String(payload.email || '').trim(),
     turno_id: String(payload.turnoId || '').trim(),
@@ -7364,11 +7380,22 @@ function apiSalvarOperador(payload) {
   if (!registro.nome) throw new Error('Informe o nome do operador.');
 
   const existente = localizarPorCampo_(ABAS.operadores, 'id', registro.id);
+  const turnoAntes = existente ? String(existente.turno_id || '').trim() : '';
+  const capAntes = existente ? Util.paraNumero(existente.capacidade) : null;
   if (existente) Repo.atualizarRegistro(ABAS.operadores, existente._linha, registro);
   else Repo.acrescentar(ABAS.operadores, [registro]);
 
+  if (payload.habilidades !== undefined) {
+    sincronizarHabilidadesOperador_(registro.id, payload.habilidades);
+  }
+
   auditar_('salvar', ABAS.operadores, existente, registro);
-  return finalizarSalvoCadastro_(payload, 'operador', registro.id);
+  const mudouOcupacao = !existente ||
+    turnoAntes !== registro.turno_id ||
+    capAntes !== registro.capacidade;
+  return finalizarSalvoCadastro_(payload, 'operador', registro.id, {
+    invalidarPainel: mudouOcupacao,
+  });
 }
 
 function apiExcluirOperador(payload) {
@@ -7381,9 +7408,8 @@ function apiExcluirOperador(payload) {
     return String(h.operador_id).trim() === id;
   }).map(function (h) { return h._linha; }));
 
-  CachePainel.invalidar();
   auditar_('excluir', ABAS.operadores, existente, null);
-  return montarPacoteCadastros_();
+  return finalizarExclusaoCadastro_('operador', id);
 }
 
 function apiSalvarHabilidade(payload) {
@@ -7419,7 +7445,7 @@ function apiSalvarHabilidade(payload) {
   if (existente) Repo.atualizarRegistro(ABAS.habilidades, existente._linha, registro);
   else Repo.acrescentar(ABAS.habilidades, [registro]);
 
-  return finalizarSalvoCadastro_(payload, 'operador', operadorId);
+  return finalizarSalvoCadastro_(payload, 'operador', operadorId, { invalidarPainel: false });
 }
 
 function apiExcluirHabilidade(payload) {
@@ -7431,7 +7457,7 @@ function apiExcluirHabilidade(payload) {
     if (String(linhas[i].operador_id).trim() === operadorId &&
         String(linhas[i].maquina_id).trim() === alvo) {
       Repo.excluirLinha(ABAS.habilidades, linhas[i]._linha);
-      return finalizarSalvoCadastro_(payload, 'operador', operadorId);
+      return finalizarSalvoCadastro_(payload, 'operador', operadorId, { invalidarPainel: false });
     }
   }
   throw new Error('Habilidade nao encontrada.');
@@ -7462,7 +7488,7 @@ function apiSalvarTurno(payload) {
   else Repo.acrescentar(ABAS.turnos, [registro]);
 
   auditar_('salvar', ABAS.turnos, existente, registro);
-  return finalizarSalvoCadastro_(payload);
+  return finalizarSalvoCadastro_(payload, 'turno', registro.id);
 }
 
 function apiExcluirTurno(payload) {
@@ -7475,9 +7501,8 @@ function apiExcluirTurno(payload) {
   const existente = localizarPorCampo_(ABAS.turnos, 'id', id);
   if (!existente) throw new Error('Turno nao encontrado.');
   Repo.excluirLinha(ABAS.turnos, existente._linha);
-  CachePainel.invalidar();
   auditar_('excluir', ABAS.turnos, existente, null);
-  return montarPacoteCadastros_();
+  return finalizarExclusaoCadastro_('turno', id);
 }
 
 function apiSalvarExcecao(payload) {
@@ -7523,7 +7548,7 @@ function apiSalvarExcecao(payload) {
   else Repo.acrescentar(ABAS.excecoes, [registro]);
 
   auditar_('salvar', ABAS.excecoes, existente, registro);
-  return finalizarSalvoCadastro_(payload);
+  return finalizarSalvoCadastro_(payload, 'excecao', registro.id);
 }
 
 function apiExcluirExcecao(payload) {
@@ -7531,9 +7556,8 @@ function apiExcluirExcecao(payload) {
   const existente = localizarPorCampo_(ABAS.excecoes, 'id', payload.id);
   if (!existente) throw new Error('Excecao nao encontrada.');
   Repo.excluirLinha(ABAS.excecoes, existente._linha);
-  CachePainel.invalidar();
   auditar_('excluir', ABAS.excecoes, existente, null);
-  return montarPacoteCadastros_();
+  return finalizarExclusaoCadastro_('excecao', payload.id);
 }
 
 function apiSalvarRestricao(payload) {
@@ -7568,7 +7592,7 @@ function apiSalvarRestricao(payload) {
   }
 
   auditar_('salvar', ABAS.restricoes, existente, registro);
-  return finalizarSalvoCadastro_(payload);
+  return finalizarSalvoCadastro_(payload, 'restricao', registro.id);
 }
 
 function apiExcluirRestricao(payload) {
@@ -7576,9 +7600,8 @@ function apiExcluirRestricao(payload) {
   const existente = localizarPorCampo_(ABAS.restricoes, 'id', payload.id);
   if (!existente) throw new Error('Restricao nao encontrada.');
   Repo.excluirLinha(ABAS.restricoes, existente._linha);
-  CachePainel.invalidar();
   auditar_('excluir', ABAS.restricoes, existente, null);
-  return montarPacoteCadastros_();
+  return finalizarExclusaoCadastro_('restricao', payload.id);
 }
 
 function apiSalvarAjuste(payload) {
@@ -7662,7 +7685,7 @@ function apiSalvarUnidade(payload) {
   if (existente) Repo.atualizarRegistro(ABAS.unidades, existente._linha, registro);
   else Repo.acrescentar(ABAS.unidades, [registro]);
 
-  return finalizarSalvoCadastro_(payload);
+  return finalizarSalvoCadastro_(payload, 'unidade', codigo);
 }
 
 
@@ -7781,12 +7804,234 @@ function anexarSalvo_(pack, entidade, id) {
   return pack;
 }
 
-function finalizarSalvoCadastro_(payload, entidade, id) {
+function finalizarSalvoCadastro_(payload, entidade, id, extra) {
+  extra = extra || {};
+  if (payload && payload._silencioso) return extra.registro || id || true;
   Repo.limparMemoria();
-  if (payload && payload._silencioso) return id || true;
+  var invalidar = extra.invalidarPainel;
+  if (invalidar === undefined) {
+    invalidar = entidade !== 'operador' && entidade !== 'habilidade';
+  }
+  if (invalidar) CachePainel.invalidar();
+  var registro = extra.registro || registroPublicoCadastro_(entidade, id);
+  var out = {
+    ok: true,
+    salvo: { entidade: entidade || '', id: id || '' },
+    entidade: entidade || '',
+    registro: registro,
+  };
+  if (entidade === 'operador') {
+    out.habilidades = habilidadesPublicasOperador_(id);
+    if (registro) {
+      registro.maquinasHabilitadas = contarMaquinasHabilitadasOp_(out.habilidades);
+    }
+  }
+  if (entidade === 'item') {
+    out.velocidadesItem = velocidadesPublicasItem_(id);
+  }
+  return out;
+}
+
+function finalizarExclusaoCadastro_(entidade, id) {
+  Repo.limparMemoria();
   CachePainel.invalidar();
-  const pack = montarPacoteCadastros_();
-  return entidade ? anexarSalvo_(pack, entidade, id) : pack;
+  return {
+    ok: true,
+    salvo: { entidade: entidade || '', id: id || '' },
+    entidade: entidade || '',
+    excluido: true,
+    id: id || '',
+  };
+}
+
+function copiarSemLinha_(obj) {
+  var out = {};
+  if (!obj) return null;
+  Object.keys(obj).forEach(function (k) {
+    if (k !== '_linha') out[k] = obj[k];
+  });
+  return out;
+}
+
+function acharPublico_(lista, campo, id) {
+  var alvo = String(id || '').trim();
+  for (var i = 0; i < (lista || []).length; i++) {
+    if (String(lista[i][campo] || '').trim() === alvo) return copiarSemLinha_(lista[i]);
+  }
+  return null;
+}
+
+function registroPublicoCadastro_(entidade, id) {
+  var alvo = String(id || '').trim();
+  if (!alvo || !entidade) return null;
+  if (entidade === 'maquina') return acharPublico_(Cadastros.maquinas(), 'id', alvo);
+  if (entidade === 'operador') return acharPublico_(Cadastros.operadores(), 'id', alvo);
+  if (entidade === 'tecnologia') return acharPublico_(Cadastros.tecnologias(false), 'id', alvo);
+  if (entidade === 'item') {
+    var item = Cadastros.itens()[alvo];
+    return item ? copiarSemLinha_(item) : null;
+  }
+  if (entidade === 'turno') {
+    var tu = acharPublico_(Cadastros.turnos(), 'id', alvo);
+    if (!tu) return null;
+    return {
+      id: tu.id,
+      nome: tu.nome,
+      dias: tu.dias,
+      horaInicio: Util.formatarHoraMin(tu.inicioMin),
+      horaFim: Util.formatarHoraMin(tu.fimMin),
+      ativo: true,
+    };
+  }
+  if (entidade === 'excecao') {
+    var ex = acharPublico_(Cadastros.excecoes(), 'id', alvo);
+    if (!ex) return null;
+    return {
+      id: ex.id,
+      data: Util.chaveDia(ex.data),
+      dataFim: ex.dataFim ? Util.chaveDia(ex.dataFim) : '',
+      maquinaId: ex.maquinaId,
+      operadorId: ex.operadorId,
+      tipo: ex.tipo,
+      horaInicio: ex.horaInicio,
+      horaFim: ex.horaFim,
+      descricao: ex.descricao,
+    };
+  }
+  if (entidade === 'restricao') {
+    var mp = acharPublico_(Cadastros.restricoesMp(), 'id', alvo);
+    if (!mp) return null;
+    return {
+      id: mp.id,
+      itemCodigo: mp.itemCodigo,
+      dataInicio: mp.dataInicio ? Util.chaveDia(mp.dataInicio) : '',
+      dataFim: mp.dataFim ? Util.chaveDia(mp.dataFim) : '',
+      motivo: mp.motivo,
+    };
+  }
+  if (entidade === 'unidade') return acharPublico_(Cadastros.unidades(), 'codigo', alvo);
+  return null;
+}
+
+function habilidadesPublicasOperador_(operadorId) {
+  var oid = String(operadorId || '').trim();
+  return Cadastros.habilidades().filter(function (h) {
+    return h.operadorId === oid;
+  }).map(function (h) {
+    return {
+      operadorId: h.operadorId,
+      maquinaId: h.maquinaId,
+      tecnologiaId: h.tecnologiaId,
+      alvoId: h.alvoId,
+      nivel: h.nivel,
+      maquinasCobertas: Cadastros.maquinasCobertasHabilidade_(h),
+    };
+  });
+}
+
+function contarMaquinasHabilitadasOp_(habs) {
+  var ids = {};
+  (habs || []).forEach(function (h) {
+    (h.maquinasCobertas || []).forEach(function (id) { ids[id] = true; });
+  });
+  return Object.keys(ids).length;
+}
+
+function velocidadesPublicasItem_(codigo) {
+  var item = String(codigo || '').trim();
+  return Cadastros.velocidades().lista.filter(function (v) {
+    return v.itemCodigo === item;
+  }).map(function (v) {
+    return {
+      item: v.itemCodigo,
+      maquinaId: v.maquinaId,
+      velocidadeHora: v.velocidadeHora,
+      setupPadraoMin: v.setupPadraoMin,
+    };
+  });
+}
+
+function sincronizarHabilidadesOperador_(operadorId, desejadas) {
+  desejadas = desejadas || [];
+  var wanted = {};
+  var wantedList = [];
+  for (var d = 0; d < desejadas.length; d++) {
+    var item = desejadas[d] || {};
+    var tid = String(item.tecnologiaId || '').trim();
+    var mid = String(item.maquinaId || '').trim();
+    if (!tid && !mid) continue;
+    var alvo = mid || tid;
+    if (wanted[alvo]) continue;
+    wanted[alvo] = true;
+    wantedList.push({ alvo: alvo, tecnologiaId: tid, maquinaId: mid });
+  }
+
+  var linhas = Repo.ler(ABAS.habilidades);
+  var atuais = [];
+  for (var i = 0; i < linhas.length; i++) {
+    if (String(linhas[i].operador_id).trim() !== operadorId) continue;
+    atuais.push(linhas[i]);
+  }
+  var apagar = [];
+  atuais.forEach(function (h) {
+    var alvo = String(h.maquina_id).trim();
+    if (!wanted[alvo]) apagar.push(h._linha);
+  });
+  if (apagar.length) Repo.excluirLinhas(ABAS.habilidades, apagar);
+
+  var jaTem = {};
+  atuais.forEach(function (h) { jaTem[String(h.maquina_id).trim()] = true; });
+  wantedList.forEach(function (w) {
+    if (jaTem[w.alvo]) return;
+    Repo.acrescentar(ABAS.habilidades, [{
+      operador_id: operadorId,
+      maquina_id: w.alvo,
+      nivel: '',
+      ativo: SIM,
+    }]);
+  });
+  return wantedList;
+}
+
+function resolverAlvoHabilidade_(token) {
+  var v = String(token || '').trim();
+  if (!v) throw new Error('Habilidade vazia.');
+  var maq = resolverMaquinaCsv_(v, true);
+  if (maq) return { maquinaId: maq };
+  var tec = resolverTecnologiaCsv_(v, true);
+  if (tec) return { tecnologiaId: tec };
+  throw new Error('Habilidade desconhecida: ' + v);
+}
+
+function resolverMaquinaCsv_(valor, opcional) {
+  var v = String(valor || '').trim();
+  if (!v) return '';
+  if (localizarPorCampo_(ABAS.maquinas, 'id', v)) return v;
+  var linhas = Repo.ler(ABAS.maquinas);
+  var alvo = v.toLowerCase();
+  for (var i = 0; i < linhas.length; i++) {
+    if (String(linhas[i].nome || '').trim().toLowerCase() === alvo) {
+      return String(linhas[i].id).trim();
+    }
+  }
+  if (opcional) return '';
+  return v;
+}
+
+function resolverTecnologiaCsv_(valor, opcional) {
+  var v = String(valor || '').trim();
+  if (!v) return '';
+  if (localizarPorCampo_(ABAS.tecnologias, 'id', v)) return v;
+  var linhas = Repo.ler(ABAS.tecnologias);
+  var alvo = v.toLowerCase();
+  for (var i = 0; i < linhas.length; i++) {
+    if (String(linhas[i].nome || '').trim().toLowerCase() === alvo ||
+        String(linhas[i].valor_backlog || '').trim().toLowerCase() === alvo) {
+      return String(linhas[i].id).trim();
+    }
+  }
+  if (opcional) return '';
+  return v;
 }
 
 function slugIdCadastro_(texto, prefixo) {
@@ -8205,56 +8450,85 @@ function montarFolhaCadastro_(aba, pack, t) {
 const CSV_CADASTRO = {
   maquinas: {
     colunas: ['id', 'nome', 'codigo_backlog', 'grupo', 'velocidade_referencia', 'setup_padrao_min', 'consumo_operador', 'considera_cor', 'ordem', 'ativo'],
-    exemplo: ['ADTP1-1', 'ADTP1-1', 'ADTP1-1', 'SB_RFID', '', '', '1', 'NAO', '20', 'SIM'],
+    exemplo: ['', 'ADTP 1', 'ADTP 1', 'SB_RFID', '', '', '1', 'NAO', '20', 'SIM'],
+    rotulos: ['maquina', 'codigoBacklog', 'grupo', 'velocidadeReferencia', 'setupPadrao', 'consumoOperador', 'consideraCor', 'ordemCadastro', 'ativo'],
+    exemploTela: ['ADTP 1', 'ADTP 1', 'SB_RFID', '', '', '1', 'NAO', '20', 'SIM'],
   },
   operadores: {
     colunas: ['id', 'nome', 'email', 'turno_id', 'capacidade', 'ativo', 'habilidades'],
-    exemplo: ['OPR-001', 'Maria Silva', 'maria@empresa.com', 'T1', '1', 'SIM', 'ADTP1-1;TEC_ADTP'],
+    exemplo: ['', 'Maria Silva', 'maria@empresa.com', 'Turno 1', '1', 'SIM', 'ADTP 1; ADTP'],
+    rotulos: ['operador', 'email', 'turno', 'capacidade', 'ativo', 'habilidades'],
+    exemploTela: ['Maria Silva', 'maria@empresa.com', 'Turno 1', '1', 'SIM', 'ADTP 1; ADTP'],
   },
   itens: {
     colunas: ['codigo', 'descricao', 'tecnologia_id', 'maquina_padrao', 'unidade', 'cor', 'velocidade_hora', 'setup_padrao_min', 'ativo'],
-    exemplo: ['ITEM-01', 'Etiqueta RFID', 'TEC_ADTP', 'ADTP1-1', 'ML', 'WHITE', '12000', '15', 'SIM'],
+    exemplo: ['ITEM-EXEMPLO', 'Etiqueta RFID', 'ADTP', 'ADTP 1', 'ML', 'WHITE', '12000', '15', 'SIM'],
+    rotulos: ['item', 'descricao', 'tecnologia', 'maquinaPadrao', 'unidade', 'cor', 'velocidadeHora', 'setupPadrao', 'ativo'],
+    exemploTela: ['ITEM-EXEMPLO', 'Etiqueta RFID', 'ADTP', 'ADTP 1', 'ML', 'WHITE', '12000', '15', 'SIM'],
   },
   tecnologias: {
     colunas: ['id', 'nome', 'grupo', 'planejavel', 'ativo'],
-    exemplo: ['TEC_ADTP', 'ADTP', 'SB_RFID', 'SIM', 'SIM'],
+    exemplo: ['', 'ADTP', 'SB_RFID', 'SIM', 'SIM'],
+    rotulos: ['tecnologia', 'grupo', 'planejavel', 'ativo'],
+    exemploTela: ['ADTP', 'SB_RFID', 'SIM', 'SIM'],
   },
   turnos: {
     colunas: ['id', 'nome', 'dias_semana', 'hora_inicio', 'hora_fim', 'ativo'],
-    exemplo: ['T1', 'Turno 1', '1,2,3,4,5,6', '06:20', '14:20', 'SIM'],
+    exemplo: ['', 'Turno 1', '1,2,3,4,5,6', '06:20', '14:20', 'SIM'],
+    rotulos: ['nomeTurno', 'diasSemana', 'horaInicio', 'horaFim', 'ativo'],
+    exemploTela: ['Turno 1', '1,2,3,4,5,6', '06:20', '14:20', 'SIM'],
   },
   unidades: {
     colunas: ['codigo', 'descricao', 'fator_pecas', 'ativo'],
     exemplo: ['ML', 'Milheiro', '1000', 'SIM'],
+    rotulos: ['unidade', 'descricao', 'fatorPecas', 'ativo'],
+    exemploTela: ['ML', 'Milheiro', '1000', 'SIM'],
   },
   excecoes: {
     colunas: ['id', 'tipo', 'data', 'data_fim', 'maquina_id', 'operador_id', 'descricao'],
-    exemplo: ['X-001', 'FERIADO', '2026-12-25', '', '', '', 'Natal'],
+    exemplo: ['', 'FERIADO', '2026-12-25', '', '', '', 'Natal'],
+    rotulos: ['excTipo', 'excData', 'excDataFim', 'excMaquina', 'excOperador', 'excDescricao'],
+    exemploTela: ['FERIADO', '2026-12-25', '', '', '', 'Natal'],
   },
   restricoes: {
     colunas: ['id', 'item_codigo', 'data_inicio', 'data_fim', 'motivo'],
-    exemplo: ['MP-001', 'ITEM-01', '2026-09-10', '2026-09-12', 'Falta de tinta'],
+    exemplo: ['', 'ITEM-EXEMPLO', '2026-09-10', '2026-09-12', 'Falta de tinta'],
+    rotulos: ['item', 'dataInicio', 'dataFim', 'motivo'],
+    exemploTela: ['ITEM-EXEMPLO', '2026-09-10', '2026-09-12', 'Falta de tinta'],
   },
 };
 
-function apiModeloCadastroCsv(payload) {
+function apiModeloCadastroXlsx(payload) {
   payload = payload || {};
   const aba = String(payload.aba || 'maquinas').trim();
-  const spec = CSV_CADASTRO[aba] || CSV_CADASTRO.maquinas;
-  const csv = montarCsv_( [spec.colunas, spec.exemplo] );
+  const spec = CSV_CADASTRO[aba];
+  if (!spec) throw new Error('Cadastro sem modelo: ' + aba);
+  const idioma = I18n.normalizar(payload.idioma);
+  const tx = I18n.dicionario(idioma);
+  const t = function (chave) { return tx[chave] || chave; };
+  const rotulos = (spec.rotulos || spec.colunas).map(function (chave) { return t(chave); });
+  const exemplo = spec.exemploTela || spec.exemplo;
+  const bytes = serializarXlsx_([{ nome: t('aba' + aba.charAt(0).toUpperCase() + aba.slice(1)) || aba, linhas: [rotulos, exemplo] }]);
   return {
-    nome: ['AIChatbot', 'modelo', aba].join('_') + '.csv',
-    mime: 'text/csv;charset=utf-8',
-    base64: base64DeBytes_(bytesUtf8_('\uFEFF' + csv)),
+    nome: ['AIChatbot', 'modelo', aba].join('_') + '.xlsx',
+    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    base64: base64DeBytes_(bytes),
   };
 }
 
-function apiImportarCadastroCsv(payload) {
+function apiModeloCadastroCsv(payload) {
+  return apiModeloCadastroXlsx(payload);
+}
+
+function apiImportarCadastroXlsx(payload) {
   payload = payload || {};
   const aba = String(payload.aba || 'maquinas').trim();
-  if (!CSV_CADASTRO[aba]) throw new Error('Cadastro sem modelo CSV: ' + aba);
-  const rows = parseCsv_(payload.csv || payload.texto || '');
-  if (!rows.length) throw new Error('CSV vazio. Baixe o modelo, preencha e carregue de novo.');
+  if (!CSV_CADASTRO[aba]) throw new Error('Cadastro sem modelo: ' + aba);
+  var rows;
+  if (payload.base64) rows = parseXlsxCadastro_(payload.base64);
+  else if (payload.csv || payload.texto) rows = parseCsv_(payload.csv || payload.texto);
+  else throw new Error('Envie o arquivo Excel (.xlsx).');
+  if (!rows.length) throw new Error('Planilha vazia. Baixe o modelo, preencha e carregue de novo.');
   Repo.limparMemoria();
   const resumo = importarLinhasCadastro_(aba, rows);
   CachePainel.invalidar();
@@ -8262,6 +8536,10 @@ function apiImportarCadastroCsv(payload) {
   const pack = montarPacoteCadastros_();
   pack.importacao = resumo;
   return pack;
+}
+
+function apiImportarCadastroCsv(payload) {
+  return apiImportarCadastroXlsx(payload);
 }
 
 function importarLinhasCadastro_(aba, rows) {
@@ -8282,9 +8560,15 @@ function importarLinhasCadastro_(aba, rows) {
 function linhaCsvEhExemplo_(aba, r) {
   const spec = CSV_CADASTRO[aba];
   if (!spec || !spec.exemplo) return false;
-  return spec.colunas.every(function (c, i) {
+  if (spec.colunas.every(function (c, i) {
     return String(csvGet_(r, [c]) || '') === String(spec.exemplo[i] || '');
-  });
+  })) return true;
+  if (spec.exemploTela && spec.rotulos) {
+    return spec.rotulos.every(function (rotulo, i) {
+      return String(csvGet_(r, [rotulo]) || '') === String(spec.exemploTela[i] || '');
+    });
+  }
+  return false;
 }
 
 function resolverTurnoCsv_(valor) {
@@ -8302,27 +8586,75 @@ function resolverTurnoCsv_(valor) {
 
 function csvGet_(row, nomes) {
   const lista = Array.isArray(nomes) ? nomes : [nomes];
-  for (let i = 0; i < lista.length; i++) {
-    const k = lista[i];
-    if (row[k] != null && String(row[k]).trim() !== '') return String(row[k]).trim();
+  const keys = [];
+  const canonicos = [];
+  lista.forEach(function (n) {
+    keys.push(n);
+    var snake = String(n).replace(/[A-Z]/g, function (m) { return '_' + m.toLowerCase(); });
+    keys.push(snake);
+    canonicos.push(n);
+    canonicos.push(snake);
+  });
+  Object.keys(ALIAS_CABECALHO_CADASTRO).forEach(function (alias) {
+    const dest = ALIAS_CABECALHO_CADASTRO[alias];
+    for (var i = 0; i < canonicos.length; i++) {
+      if (dest.indexOf(canonicos[i]) >= 0) keys.push(alias);
+    }
+  });
+  for (var k = 0; k < keys.length; k++) {
+    var chave = keys[k];
+    if (row[chave] != null && String(row[chave]).trim() !== '') return String(row[chave]).trim();
   }
   return '';
 }
 
+const ALIAS_CABECALHO_CADASTRO = {
+  maquina: ['nome', 'maquina_id', 'maquina_padrao'],
+  codigo_no_backlog: ['codigo_backlog'],
+  velocidade_de_referencia: ['velocidade_referencia'],
+  velocidade_padrao: ['velocidade_referencia'],
+  setup_padrao: ['setup_padrao_min'],
+  consumo_do_operador: ['consumo_operador'],
+  consumo_de_operador: ['consumo_operador'],
+  ordem_na_lista: ['ordem'],
+  operador: ['nome', 'operador_id'],
+  funcionario: ['nome'],
+  turno: ['turno_id'],
+  item: ['codigo', 'item_codigo'],
+  tecnologia: ['tecnologia_id', 'nome'],
+  maquina_padrao: ['maquina_padrao'],
+  velocidade_hora: ['velocidade_hora'],
+  nome_turno: ['nome'],
+  hora_inicio: ['hora_inicio'],
+  hora_fim: ['hora_fim'],
+  dias_da_semana: ['dias_semana'],
+  dias_semana: ['dias_semana'],
+  unidade: ['unidade', 'codigo'],
+  fator_de_pecas: ['fator_pecas'],
+  fator_pecas: ['fator_pecas'],
+  data_fim: ['data_fim'],
+  data_de_inicio: ['data_inicio'],
+  data_inicio: ['data_inicio'],
+  habilidades: ['habilidades'],
+};
+
 function importarUmaLinhaCadastro_(aba, r) {
   if (aba === 'maquinas') {
-    const id = csvGet_(r, ['id', 'codigo']) || slugIdCadastro_(csvGet_(r, ['nome', 'maquina']), 'MAQ');
+    const nome = csvGet_(r, ['nome', 'maquina']);
+    let id = csvGet_(r, ['id', 'codigo']);
+    if (!id && nome) id = resolverMaquinaCsv_(nome, true) || slugIdCadastro_(nome, 'MAQ');
+    if (!id) id = slugIdCadastro_(nome, 'MAQ');
     const existia = !!localizarPorCampo_(ABAS.maquinas, 'id', id);
     apiSalvarMaquina({
       id: id,
-      nome: csvGet_(r, ['nome', 'maquina']) || id,
-      codigoBacklog: csvGet_(r, ['codigo_backlog', 'codigoBacklog']) || id,
+      nome: nome || id,
+      codigoBacklog: csvGet_(r, ['codigo_backlog', 'codigoBacklog', 'codigo_no_backlog']) || id,
       grupo: csvGet_(r, ['grupo']) || GRUPO.rfid,
       velocidadeReferencia: csvGet_(r, ['velocidade_referencia', 'velocidadeReferencia']),
-      setupPadraoMin: csvGet_(r, ['setup_padrao_min', 'setupPadraoMin']),
+      setupPadraoMin: csvGet_(r, ['setup_padrao_min', 'setupPadraoMin', 'setup_padrao']),
       consumoOperador: csvGet_(r, ['consumo_operador', 'consumoOperador']) || 1,
       consideraCor: csvGet_(r, ['considera_cor', 'consideraCor']) || NAO,
-      ordem: csvGet_(r, ['ordem']) || 99,
+      ordem: csvGet_(r, ['ordem', 'ordem_na_lista']) || 99,
       ativo: csvGet_(r, ['ativo']) || SIM,
       _silencioso: true,
     });
@@ -8338,8 +8670,21 @@ function importarUmaLinhaCadastro_(aba, r) {
       })[0];
       if (porEmail) id = String(porEmail.id).trim();
     }
-    if (!id) id = Util.gerarId('OPR');
+    if (!id && nome) {
+      const porNome = Repo.ler(ABAS.operadores).filter(function (o) {
+        return String(o.nome || '').trim().toLowerCase() === nome.toLowerCase();
+      })[0];
+      if (porNome) id = String(porNome.id).trim();
+    }
+    if (!id) id = slugIdCadastro_(nome, 'OPR');
     const existia = !!localizarPorCampo_(ABAS.operadores, 'id', id);
+    const habs = csvGet_(r, ['habilidades', 'maquinas']);
+    var listaHab;
+    if (habs) {
+      listaHab = String(habs).split(/[;,|]/).map(function (h) { return h.trim(); }).filter(Boolean).map(function (token) {
+        return resolverAlvoHabilidade_(token);
+      });
+    }
     apiSalvarOperador({
       id: id,
       nome: nome || id,
@@ -8347,17 +8692,9 @@ function importarUmaLinhaCadastro_(aba, r) {
       turnoId: resolverTurnoCsv_(csvGet_(r, ['turno_id', 'turnoId', 'turno'])),
       capacidade: csvGet_(r, ['capacidade']) || 1,
       ativo: csvGet_(r, ['ativo']) || SIM,
+      habilidades: listaHab,
       _silencioso: true,
     });
-    const habs = csvGet_(r, ['habilidades', 'maquinas']);
-    if (habs) {
-      String(habs).split(/[;,|]/).map(function (h) { return h.trim(); }).filter(Boolean).forEach(function (alvo) {
-        const ehMaq = !!localizarPorCampo_(ABAS.maquinas, 'id', alvo);
-        apiSalvarHabilidade(ehMaq
-          ? { operadorId: id, maquinaId: alvo, _silencioso: true }
-          : { operadorId: id, tecnologiaId: alvo, _silencioso: true });
-      });
-    }
     return existia ? 'atualizada' : 'nova';
   }
   if (aba === 'itens') {
@@ -8367,24 +8704,25 @@ function importarUmaLinhaCadastro_(aba, r) {
     apiSalvarItem({
       codigo: codigo,
       descricao: csvGet_(r, ['descricao']) || codigo,
-      tecnologiaId: csvGet_(r, ['tecnologia_id', 'tecnologiaId']),
-      maquinaPadrao: csvGet_(r, ['maquina_padrao', 'maquinaPadrao', 'maquina']),
+      tecnologiaId: resolverTecnologiaCsv_(csvGet_(r, ['tecnologia_id', 'tecnologiaId', 'tecnologia'])),
+      maquinaPadrao: resolverMaquinaCsv_(csvGet_(r, ['maquina_padrao', 'maquinaPadrao', 'maquina'])),
       unidade: csvGet_(r, ['unidade']) || 'ML',
       cor: csvGet_(r, ['cor']),
       velocidadeHora: csvGet_(r, ['velocidade_hora', 'velocidadeHora']),
-      setupPadraoMin: csvGet_(r, ['setup_padrao_min', 'setupPadraoMin']),
+      setupPadraoMin: csvGet_(r, ['setup_padrao_min', 'setupPadraoMin', 'setup_padrao']),
       ativo: csvGet_(r, ['ativo']) || SIM,
       _silencioso: true,
     });
     return existia ? 'atualizada' : 'nova';
   }
   if (aba === 'tecnologias') {
-    const id = csvGet_(r, ['id']);
+    const nome = csvGet_(r, ['nome', 'tecnologia']);
+    let id = csvGet_(r, ['id']) || resolverTecnologiaCsv_(nome, true);
     if (!id) throw new Error('Informe o id da tecnologia.');
     const existia = !!localizarPorCampo_(ABAS.tecnologias, 'id', id);
     apiSalvarTecnologia({
       id: id,
-      nome: csvGet_(r, ['nome', 'tecnologia']) || id,
+      nome: nome || id,
       planejavel: csvGet_(r, ['planejavel']) || SIM,
       ativo: csvGet_(r, ['ativo']) || SIM,
       _silencioso: true,
@@ -8392,11 +8730,12 @@ function importarUmaLinhaCadastro_(aba, r) {
     return existia ? 'atualizada' : 'nova';
   }
   if (aba === 'turnos') {
-    const id = csvGet_(r, ['id']) || slugIdCadastro_(csvGet_(r, ['nome']), 'T');
+    const nome = csvGet_(r, ['nome', 'nome_turno']);
+    const id = csvGet_(r, ['id']) || resolverTurnoCsv_(nome) || slugIdCadastro_(nome, 'T');
     const existia = !!localizarPorCampo_(ABAS.turnos, 'id', id);
     apiSalvarTurno({
       id: id,
-      nome: csvGet_(r, ['nome']) || id,
+      nome: nome || id,
       dias: csvGet_(r, ['dias_semana', 'dias']),
       horaInicio: csvGet_(r, ['hora_inicio', 'horaInicio']),
       horaFim: csvGet_(r, ['hora_fim', 'horaFim']),
@@ -8450,21 +8789,124 @@ function parseCsv_(texto) {
   if (!linhasBrutas.length) return [];
   const sep = detectarSeparadorCsv_(linhasBrutas[0]);
   const tabela = linhasBrutas.map(function (l) { return parseCsvLinha_(l, sep); });
-  const cab = tabela[0].map(function (h) {
-    return String(h || '').trim().toLowerCase()
-      .replace(/\s+/g, '_')
-      .replace(/[áàâãä]/g, 'a').replace(/[éèêë]/g, 'e')
-      .replace(/[íìîï]/g, 'i').replace(/[óòôõö]/g, 'o')
-      .replace(/[úùûü]/g, 'u').replace(/ç/g, 'c');
-  });
+  return objetosDeTabelaCadastro_(tabela);
+}
+
+function normalizarCabecalhoCadastro_(h) {
+  return String(h || '').trim().toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[áàâãä]/g, 'a').replace(/[éèêë]/g, 'e')
+    .replace(/[íìîï]/g, 'i').replace(/[óòôõö]/g, 'o')
+    .replace(/[úùûü]/g, 'u').replace(/ç/g, 'c');
+}
+
+function objetosDeTabelaCadastro_(tabela) {
+  if (!tabela || !tabela.length) return [];
+  const cab = tabela[0].map(normalizarCabecalhoCadastro_);
   const out = [];
   for (let i = 1; i < tabela.length; i++) {
     const obj = {};
-    cab.forEach(function (k, c) { obj[k] = tabela[i][c] != null ? tabela[i][c] : ''; });
+    cab.forEach(function (k, c) { obj[k] = tabela[i][c] != null ? String(tabela[i][c]) : ''; });
     const vazio = cab.every(function (k) { return !String(obj[k] || '').trim(); });
     if (!vazio) out.push(obj);
   }
   return out;
+}
+
+function parseXlsxCadastro_(base64) {
+  const bytes = Utilities.base64Decode(String(base64 || ''));
+  const blob = Utilities.newBlob(bytes, 'application/zip', 'cadastro.xlsx');
+  const parts = Utilities.unzip(blob);
+  let shared = [];
+  let sheetXml = '';
+  for (let i = 0; i < parts.length; i++) {
+    const name = String(parts[i].getName() || '').replace(/\\/g, '/');
+    if (/sharedStrings\.xml$/i.test(name)) {
+      shared = parseSharedStringsXml_(parts[i].getDataAsString());
+    }
+    if (/worksheets\/sheet1\.xml$/i.test(name)) {
+      sheetXml = parts[i].getDataAsString();
+    }
+  }
+  if (!sheetXml) {
+    for (let j = 0; j < parts.length; j++) {
+      const n2 = String(parts[j].getName() || '').replace(/\\/g, '/');
+      if (/worksheets\/sheet\d+\.xml$/i.test(n2)) {
+        sheetXml = parts[j].getDataAsString();
+        break;
+      }
+    }
+  }
+  if (!sheetXml) throw new Error('Planilha Excel sem aba.');
+  return objetosDeTabelaCadastro_(linhasDeSheetXml_(sheetXml, shared));
+}
+
+function parseSharedStringsXml_(xml) {
+  const out = [];
+  const re = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
+  let m;
+  while ((m = re.exec(String(xml || '')))) {
+    const texts = [];
+    const tRe = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+    let tm;
+    while ((tm = tRe.exec(m[1]))) texts.push(decodificarXmlTexto_(tm[1]));
+    out.push(texts.join(''));
+  }
+  return out;
+}
+
+function linhasDeSheetXml_(xml, shared) {
+  shared = shared || [];
+  const rows = [];
+  const reRow = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+  let rm;
+  while ((rm = reRow.exec(String(xml || '')))) {
+    const cells = {};
+    let maxCol = 0;
+    const reC = /<c\b([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g;
+    let cm;
+    while ((cm = reC.exec(rm[1]))) {
+      const attrs = cm[1] || '';
+      const inner = cm[2] || '';
+      const refM = attrs.match(/\br="([A-Z]+)(\d+)"/);
+      const col = refM ? colLetterToIndex_(refM[1]) : maxCol;
+      maxCol = Math.max(maxCol, col + 1);
+      const tM = attrs.match(/\bt="([^"]+)"/);
+      const tipo = tM ? tM[1] : '';
+      var val = '';
+      if (tipo === 's') {
+        const v = (inner.match(/<v\b[^>]*>([\s\S]*?)<\/v>/) || [])[1];
+        val = shared[Number(v)] || '';
+      } else if (tipo === 'inlineStr') {
+        const it = inner.match(/<t\b[^>]*>([\s\S]*?)<\/t>/);
+        val = it ? decodificarXmlTexto_(it[1]) : '';
+      } else {
+        const v2 = inner.match(/<v\b[^>]*>([\s\S]*?)<\/v>/);
+        val = v2 ? decodificarXmlTexto_(v2[1]) : '';
+      }
+      cells[col] = val;
+    }
+    const line = [];
+    for (let i = 0; i < maxCol; i++) line.push(cells[i] || '');
+    if (line.join('').trim()) rows.push(line);
+  }
+  return rows;
+}
+
+function colLetterToIndex_(letters) {
+  let n = 0;
+  const s = String(letters || '');
+  for (let i = 0; i < s.length; i++) n = n * 26 + (s.charCodeAt(i) - 64);
+  return n - 1;
+}
+
+function decodificarXmlTexto_(s) {
+  return String(s || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
 }
 
 function detectarSeparadorCsv_(linha) {
