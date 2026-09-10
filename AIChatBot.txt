@@ -2429,6 +2429,7 @@ function montarPlano(grupoOuFiltro, hoje) {
       l.estadoPrazo = estadoPrazoDatas_(
         l.fim, l.dataDesejada, l.dataPrometida, l.situacao, temPrograma);
       l.atrasoDias = diasAtrasoIso_(l.fim, l.dataPrometida || l.dataDesejada);
+      l.mrpBuraco = !!negativo;
       const diag = inferirRestricaoLinha_(l, cob, firmesPorMaq[l.maquinaId || (l.plano && l.plano.maquinaId)] || [], congelaPlano);
       l.restricao = diag.codigo;
       l.restricaoTexto = diag.texto;
@@ -2441,7 +2442,6 @@ function montarPlano(grupoOuFiltro, hoje) {
       l.qtdSoSnapshot = cob ? cob.qtdSoSnapshot : null;
       l.dataSoSnapshot = cob ? cob.dataSoSnapshot : '';
       l.divergenciaSo = divergenciaSoLinha_(l, cob);
-      l.mrpBuraco = !!negativo;
     });
     item.linhas.sort(compararPedidoProducao_);
     return item;
@@ -3100,6 +3100,12 @@ function inferirRestricaoLinha_(l, cob, firmesMaq, congela) {
   const sit = restricaoPorSituacao_(l.situacao);
   if (sit) return { codigo: sit, texto: textoRestricao_(sit, { maquinaNome: l.maquinaNome }) };
   if (!cob || l.cobertura === COBERTURA.semOrdem) {
+    if (l.mrpBuraco) {
+      return {
+        codigo: RESTRICAO.semCapacidade,
+        texto: textoRestricao_(RESTRICAO.semCapacidade, { maquinaNome: l.maquinaNome }),
+      };
+    }
     return { codigo: '', texto: '' };
   }
   if (l.estadoPrazo !== ESTADO_PRAZO.risco && l.estadoPrazo !== ESTADO_PRAZO.atrasado) {
@@ -3174,6 +3180,7 @@ function apiAplicarSugestao(grupoOuFiltro) {
   CachePainel.invalidar();
   Repo.limparMemoria();
   const plano = montarPlano(grupoOuFiltro, new Date());
+  aplicarDiagnosticosPlano_(plano, sugestao.diagnosticos);
   plano.sugestao = {
     aplicada: true,
     escopoCalculo: sugestao.escopoCalculo || 'novas',
@@ -3184,6 +3191,18 @@ function apiAplicarSugestao(grupoOuFiltro) {
     mrpBuracos: sugestao.mrpBuracos || [],
   };
   return plano;
+}
+
+function aplicarDiagnosticosPlano_(plano, diagnosticos) {
+  if (!plano || !diagnosticos) return;
+  (plano.pedidos || []).forEach(function (l) {
+    const d = diagnosticos[l.chave];
+    if (!d || !d.restricao) return;
+    if (l.cobertura && l.cobertura !== COBERTURA.semOrdem) return;
+    if (l.restricao) return;
+    l.restricao = d.restricao;
+    l.restricaoTexto = d.restricaoTexto || textoRestricao_(d.restricao, { maquinaNome: l.maquinaNome });
+  });
 }
 
 /**
@@ -3586,7 +3605,8 @@ function montarSugestao(grupoOuFiltro, hoje) {
 
   const horizonteMrp = montarHorizonte(hoje);
   const reparo = repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado,
-    vel, turnos, excecoes, ops, habs, itensCad, estoque, horizonteMrp, hoje, fimHorizonte, congela);
+    vel, turnos, excecoes, ops, habs, itensCad, estoque, horizonteMrp, hoje, fimHorizonte,
+    congela, mp, recalcularAbertas);
   propostas.forEach(function (p) {
     if (!p.reparoMrp) return;
     const desejada = isoDia_(p.dataDesejada || p.dataPrometida || '');
@@ -3729,6 +3749,20 @@ function aplicarSugestao_(sugestao) {
   });
   if (novos.length) Repo.acrescentar(ABAS.ordens, novos);
 
+  (sugestao.propostas || []).forEach(function (p) {
+    if (!p || !p.reparoMrp || !p.existente || !p.chave_demanda) return;
+    Cadastros.ordens().forEach(function (o) {
+      if (o.chaveDemanda !== p.chave_demanda) return;
+      if (o.tipo !== TIPO_ORDEM.planejada) return;
+      if (ordemFirme_(o, congela)) return;
+      Repo.atualizarCelulas(ABAS.ordens, o._linha, {
+        inicio: p.inicio,
+        fim: p.fim,
+        atualizado_em: agora,
+      });
+    });
+  });
+
   if (congela.aoAplicar) {
     Cadastros.ordens().forEach(function (o) {
       if (o.tipo !== TIPO_ORDEM.planejada || o.travada) return;
@@ -3805,11 +3839,14 @@ function apiLiberarPlanejadas(payload) {
 
   const agora = new Date();
   alvos.forEach(function (o) {
+    const d = demandas[o.chaveDemanda] || {};
     Repo.atualizarCelulas(ABAS.ordens, o._linha, {
       tipo: TIPO_ORDEM.liberada,
       travada: SIM,
       origem: ORIGEM.manual,
       atualizado_em: agora,
+      qtd_so_snapshot: d.quantidadePecas != null ? d.quantidadePecas : o.quantidade,
+      data_so_snapshot: isoDia_(d.dataDesejada || d.dataPrometida || ''),
     });
   });
 
@@ -4329,9 +4366,11 @@ function alocarConformeOtimizacao_(maq, busca, job, duracaoMin, fimHorizonte, oc
       return alocarSlot_(maq, busca, fimHorizonte, duracaoMin, ocupado, turnos, excecoes, ops, habs) || asap;
     }
   }
-  const perto = tentarJit_();
-  if (perto) return perto;
-  return alocarSlot_(maq, busca, fimHorizonte, duracaoMin, ocupado, turnos, excecoes, ops, habs);
+  /**
+   * Fora da janela de 2 semanas (e no modo JIT): so tenta colar na data.
+   * Cair no slot mais cedo puxava o 01/10 para hoje e furava o 15/09.
+   */
+  return tentarJit_();
 }
 
 function alocarSlot_(maq, inicio, fimHorizonte, duracaoMin, ocupado, turnos, excecoes, ops, habs) {
@@ -4383,9 +4422,50 @@ function alocarSlot_(maq, inicio, fimHorizonte, duracaoMin, ocupado, turnos, exc
  * Nao mexe em LIBERADA/travada e nao inventa pecas.
  */
 function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado,
-    vel, turnos, excecoes, ops, habs, itensCad, estoque, horizonte, hoje, fimHorizonte, congela) {
+    vel, turnos, excecoes, ops, habs, itensCad, estoque, horizonte, hoje, fimHorizonte,
+    congela, mp, recalcularAbertas) {
   const out = { buracos: [], movidas: 0 };
-  if (!propostas || !propostas.length || !horizonte || !horizonte.length) return out;
+  propostas = propostas || [];
+  if (!horizonte || !horizonte.length) return out;
+
+  const porChaveDemanda = {};
+  (demandas || []).forEach(function (d) { porChaveDemanda[d.chave] = d; });
+  const chavesProp = {};
+  propostas.forEach(function (p) {
+    if (p && p.chave_demanda) chavesProp[p.chave_demanda] = true;
+  });
+  const extra = [];
+  (ordens || []).forEach(function (o) {
+    if (!o || ordemEncerrada_(o) || ordemFirme_(o, congela)) return;
+    if (o.tipo !== TIPO_ORDEM.planejada) return;
+    if (recalcularAbertas) return;
+    if (chavesProp[o.chaveDemanda]) return;
+    const d = porChaveDemanda[o.chaveDemanda] || {};
+    extra.push({
+      id: o.id,
+      chave_demanda: o.chaveDemanda,
+      item_codigo: o.itemCodigo,
+      maquina_id: o.maquinaId,
+      quantidade: o.quantidade,
+      setup_min: o.setupMin,
+      inicio: o.inicio instanceof Date ? Util.formatarISO(o.inicio) : o.inicio,
+      fim: o.fim instanceof Date ? Util.formatarISO(o.fim) : o.fim,
+      dataDesejada: d.dataDesejada,
+      dataPrometida: d.dataPrometida,
+      existente: true,
+    });
+    chavesProp[o.chaveDemanda] = true;
+  });
+  const candidatas = propostas.concat(extra);
+  if (!candidatas.length) return out;
+
+  function chavesProposta_() {
+    const m = {};
+    candidatas.forEach(function (p) {
+      if (p && p.chave_demanda) m[p.chave_demanda] = true;
+    });
+    return m;
+  }
 
   function projetar_() {
     const porItem = {};
@@ -4405,15 +4485,19 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
       if (idx < 0) return;
       itemDe_(d.itemCodigo).demanda[idx] += d.quantidadePecas || 0;
     });
+    const jaProp = chavesProposta_();
     (ordens || []).forEach(function (o) {
-      if (!ordemFirme_(o, congela)) return;
-      if (o.tipo === TIPO_ORDEM.encerrada) return;
+      if (!o || ordemEncerrada_(o)) return;
+      if (jaProp[o.chaveDemanda] && !ordemFirme_(o, congela)) return;
+      const cobre = o.tipo === TIPO_ORDEM.liberada || ordemFirme_(o, congela) ||
+        (!recalcularAbertas && o.tipo === TIPO_ORDEM.planejada);
+      if (!cobre) return;
       const iso = dataOrdemIso_(o);
       const idx = indicePeriodo_(horizonte, iso);
       if (idx < 0) return;
       itemDe_(o.itemCodigo).oferta[idx] += o.quantidade || 0;
     });
-    (propostas || []).forEach(function (p) {
+    candidatas.forEach(function (p) {
       const iso = isoDia_(p.fim);
       const idx = indicePeriodo_(horizonte, iso);
       if (idx < 0) return;
@@ -4441,7 +4525,7 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
   const porBuraco = {};
   buracos.forEach(function (b) { porBuraco[b.item] = b; });
 
-  propostas.slice().sort(function (a, b) {
+  candidatas.slice().sort(function (a, b) {
     return String(b.fim || '').localeCompare(String(a.fim || ''));
   }).forEach(function (p) {
     const buraco = porBuraco[p.item_codigo];
@@ -4451,6 +4535,8 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
     if (fimIdx >= 0 && fimIdx <= buraco.idx) return;
     const maq = mapaMaqs[p.maquina_id];
     if (!maq) return;
+    const mpEstado = estadoMp_(p.item_codigo, mp || [], hoje, fimHorizonte);
+    if (mpEstado.bloqueadaSemRetorno) return;
     const job = {
       itemCodigo: p.item_codigo,
       quantidade: p.quantidade,
@@ -4460,15 +4546,17 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
     const pecasHora = velocidadeJob_(job, vel, maq);
     if (!pecasHora) return;
     const duracao = (p.setup_min || 0) + ((p.quantidade || 0) / pecasHora) * 60;
-    const ocupNovo = reconstruirOcupacaoMrp_(maqs, ordens, propostas, p.id, vel, mapaMaqs,
-      turnos, excecoes, ops, habs, congela);
-    const slot = alocarSlot_(maq, hoje, fimHorizonte, duracao, ocupNovo, turnos, excecoes, ops, habs);
+    const ocupNovo = reconstruirOcupacaoMrp_(maqs, ordens, candidatas, p.id, vel, mapaMaqs,
+      turnos, excecoes, ops, habs, congela, recalcularAbertas);
+    const busca = mpEstado.liberacao && mpEstado.liberacao > hoje ? mpEstado.liberacao : hoje;
+    const slot = alocarSlot_(maq, busca, fimHorizonte, duracao, ocupNovo, turnos, excecoes, ops, habs);
     if (!slot) return;
     const novoIdx = indicePeriodo_(horizonte, Util.chaveDia(slot.fim));
     if (novoIdx < 0 || novoIdx > buraco.idx) return;
     p.inicio = Util.formatarISO(slot.inicio);
     p.fim = Util.formatarISO(slot.fim);
     p.reparoMrp = true;
+    if (p.existente) propostas.push(p);
     out.movidas++;
     Object.keys(ocupado).forEach(function (k) {
       if (k === '__pessoas') {
@@ -4487,12 +4575,20 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
 }
 
 function reconstruirOcupacaoMrp_(maqs, ordens, propostas, exceptId, vel, mapaMaqs,
-    turnos, excecoes, ops, habs, congela) {
+    turnos, excecoes, ops, habs, congela, recalcularAbertas) {
   const ocupado = {};
   (maqs || []).forEach(function (m) { ocupado[m.id] = {}; });
   ocupado.__pessoas = {};
+  const chavesProp = {};
+  (propostas || []).forEach(function (p) {
+    if (p && p.chave_demanda) chavesProp[p.chave_demanda] = true;
+  });
   (ordens || []).forEach(function (o) {
-    if (!ordemFirme_(o, congela)) return;
+    if (!o || o.id === exceptId || ordemEncerrada_(o)) return;
+    if (chavesProp[o.chaveDemanda] && !ordemFirme_(o, congela)) return;
+    const cobre = ordemFirme_(o, congela) ||
+      (!recalcularAbertas && o.tipo === TIPO_ORDEM.planejada);
+    if (!cobre) return;
     if (!ocupado[o.maquinaId]) ocupado[o.maquinaId] = {};
     consumirOcupacao_(ocupado[o.maquinaId], o.inicio, o.fim, o.setupMin, duracaoOrdemMin_(o, vel, maqs));
     const maq = mapaMaqs[o.maquinaId];

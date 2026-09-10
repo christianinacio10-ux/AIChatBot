@@ -217,6 +217,14 @@ ok('15/09 com datetime e ASAP nas 2 semanas', otim.antecipa({ dataDesejada: '202
 ok('15/09 como Date e ASAP nas 2 semanas', otim.antecipa({ dataDesejada: new Date(2026, 8, 15) }));
 ok('01/10 com datetime nao e ASAP', !otim.antecipa({ dataDesejada: '2026-10-01T08:00:00' }));
 ok('01/10 como Date nao e ASAP', !otim.antecipa({ dataDesejada: new Date(2026, 9, 1) }));
+ok(
+  'modo JIT nunca puxa para hoje',
+  !politicaOtimizacao_(cfg({
+    otimizacao_modo: 'jit',
+    otimizacao_semanas_antecipacao: 2,
+    otimizacao_folga_dias: 2,
+  }), hoje).antecipa({ dataDesejada: '2026-09-15' })
+);
 
 function projetar(demanda, oferta, estoque) {
   const out = [];
@@ -233,6 +241,19 @@ ok('MRP semana 1 sem buraco quando oferta cobre demanda', mrp[0] >= 0 && mrp.eve
 
 const buraco = projetar([100, 0, 0], [0, 100, 0], 0);
 ok('MRP detecta buraco se oferta cai depois da demanda', buraco[0] < 0);
+
+const puxado = projetar([100, 0, 0], [100, 0, 0], 0);
+ok('reparo MRP puxando oferta para a semana 1 zera o projetado', puxado[0] >= 0 && puxado.every(function (v) { return v >= 0; }));
+
+const sku = projetar(
+  [100, 43.904],
+  [100 - 2.239 + 43.904, 0],
+  0
+);
+ok(
+  'oferta no fim antecipado cobre a semana 1; buraco posterior = pecas sem OT',
+  sku[0] > 0 && Math.abs(sku[1] + 2.239) < 0.001
+);
 
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
