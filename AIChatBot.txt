@@ -1259,7 +1259,7 @@ const Cadastros = {
       const pecas = d.quantidadePecas;
       if (pecas == null || Math.abs(pecas - Math.round(pecas)) <= 0.0001) return;
       const um = d.unidade || '--';
-      if (!fracionadas[um]) fracionadas[um] = { n: 0, exemplo: pecas };
+      if (!fracionadas[um]) fracionadas[um] = { n: 0, exemplo: Util.arredondarPecas(pecas) };
       fracionadas[um].n++;
     });
     Object.keys(fracionadas).forEach(function (um) {
