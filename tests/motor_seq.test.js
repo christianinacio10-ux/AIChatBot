@@ -84,6 +84,8 @@ const ctx = {
 vm.createContext(ctx);
 vm.runInContext(
   extractFn('isoDia_') + '\n' +
+  extractFn('dataEntregaIso_') + '\n' +
+  extractFn('dataDemandaIso_') + '\n' +
   extractFn('dataOrdemIso_') + '\n' +
   extractFn('indicePeriodo_') + '\n' +
   extractFn('ordemEncerrada_') + '\n' +
@@ -103,6 +105,8 @@ vm.runInContext(
 const escolherProximoJob_ = ctx.escolherProximoJob_;
 const ordemFirme_ = ctx.ordemFirme_;
 const isoDia_ = ctx.isoDia_;
+const dataEntregaIso_ = ctx.dataEntregaIso_;
+const dataDemandaIso_ = ctx.dataDemandaIso_;
 const indicePeriodo_ = ctx.indicePeriodo_;
 const politicaCongelamento_ = ctx.politicaCongelamento_;
 const politicaOtimizacao_ = ctx.politicaOtimizacao_;
@@ -254,6 +258,26 @@ ok('15/09 como Date e ASAP nas 2 semanas', otim.antecipa({ dataDesejada: new Dat
 ok('01/10 com datetime nao e ASAP', !otim.antecipa({ dataDesejada: '2026-10-01T08:00:00' }));
 ok('01/10 como Date nao e ASAP', !otim.antecipa({ dataDesejada: new Date(2026, 9, 1) }));
 ok(
+  '01/10 so no Vcto nao e ASAP em 11/09',
+  !otim.antecipa({ dataVencimento: '2026-10-01', dataDesejada: '', dataPrometida: '' })
+);
+ok(
+  'Vcto manda mesmo se desejada estiver mais cedo',
+  !otim.antecipa({ dataVencimento: '2026-10-01', dataDesejada: '2026-09-15' })
+);
+ok(
+  'Vcto dentro das 2 semanas e ASAP',
+  otim.antecipa({ dataVencimento: '2026-09-20' })
+);
+ok(
+  'demanda da grade senta no Vcto, nao na desejada',
+  dataDemandaIso_({ dataVencimento: '2026-10-01', dataDesejada: '2026-09-15' }) === '2026-10-01'
+);
+ok(
+  'sem Vcto a entrega cai na prometida',
+  dataEntregaIso_({ dataPrometida: '2026-09-22', dataDesejada: '2026-09-15' }) === '2026-09-22'
+);
+ok(
   'modo JIT nunca puxa para hoje',
   !politicaOtimizacao_(cfg({
     otimizacao_modo: 'jit',
@@ -383,7 +407,7 @@ const otimJanela = politicaOtimizacao_(cfg({
   otimizacao_folga_dias: 2,
 }), hoje);
 const semCongela = politicaCongelamento_(cfg({ congelar_dias: 0 }), hoje);
-const dem0110 = { dataDesejada: '2026-10-01' };
+const dem0110 = { dataVencimento: '2026-10-01', dataDesejada: '2026-10-01' };
 
 ok(
   'PLANEJADA de 01/10 parada em 14/09 conta como fora da janela',
