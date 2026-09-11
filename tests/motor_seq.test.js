@@ -44,20 +44,43 @@ const Util = {
   somarDias(data, dias) {
     return new Date(data.getFullYear(), data.getMonth(), data.getDate() + dias);
   },
+  somarMinutos(data, minutos) {
+    return new Date(data.getTime() + minutos * 60000);
+  },
   chaveDia(data) {
     return data.getFullYear() + '-' + this.dois_(data.getMonth() + 1) + '-' + this.dois_(data.getDate());
   },
 };
 
+/**
+ * Calendario de mentira para exercitar alocarSlot_: capacidade igual todo dia,
+ * menos os dias listados em semTurno.
+ */
+const Calendario = { capacidadeMin: 480, semTurno: {}, pessoas: 1 };
+
+/** Le a constante do proprio fonte: voltar a 0,01 minuto quebra os testes. */
+function extractConst(name) {
+  const m = src.match(new RegExp('const ' + name + ' = ([^;]+);'));
+  if (!m) throw new Error('nao achei const ' + name);
+  return Number(m[1]);
+}
+
 const vm = require('vm');
 const ctx = {
   Util: Util,
+  EPS_MIN: extractConst('EPS_MIN'),
   TIPO_ORDEM: { planejada: 'PLANEJADA', liberada: 'LIBERADA', encerrada: 'ENCERRADA' },
   MODO_OTIMIZACAO: { antecipar: 'antecipar', jit: 'jit' },
+  minutosEfetivosMaquina_(maq, dia) {
+    return Calendario.semTurno[Util.chaveDia(dia)] ? 0 : Calendario.capacidadeMin;
+  },
+  pessoasDisponiveis_() { return Calendario.pessoas; },
+  consumirMinutosOperadores_() {},
 };
 vm.createContext(ctx);
 vm.runInContext(
   extractFn('isoDia_') + '\n' +
+  extractFn('dataOrdemIso_') + '\n' +
   extractFn('indicePeriodo_') + '\n' +
   extractFn('ordemEncerrada_') + '\n' +
   extractFn('ordemFirme_') + '\n' +
@@ -65,7 +88,11 @@ vm.runInContext(
   extractFn('politicaOtimizacao_') + '\n' +
   extractFn('jobPiorQueCabeca_') + '\n' +
   extractFn('jobNaJanelaCabeca_') + '\n' +
-  extractFn('escolherProximoJob_'),
+  extractFn('escolherProximoJob_') + '\n' +
+  extractFn('alocarSlot_') + '\n' +
+  extractFn('planejadaForaDaJanela_') + '\n' +
+  extractFn('dataFilaProducao_') + '\n' +
+  extractFn('compararPedidoProducao_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
@@ -74,6 +101,9 @@ const isoDia_ = ctx.isoDia_;
 const indicePeriodo_ = ctx.indicePeriodo_;
 const politicaCongelamento_ = ctx.politicaCongelamento_;
 const politicaOtimizacao_ = ctx.politicaOtimizacao_;
+const alocarSlot_ = ctx.alocarSlot_;
+const planejadaForaDaJanela_ = ctx.planejadaForaDaJanela_;
+const compararPedidoProducao_ = ctx.compararPedidoProducao_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -253,6 +283,121 @@ const sku = projetar(
 ok(
   'oferta no fim antecipado cobre a semana 1; buraco posterior = pecas sem OT',
   sku[0] > 0 && Math.abs(sku[1] + 2.239) < 0.001
+);
+
+/* ---------------------------------------------- alocarSlot_ e ordens pequenas */
+
+const maqAd = { id: 'ADTP1-1', consumoOperador: 1 };
+const fimHorizonte = new Date(2026, 11, 31);
+const PECAS_HORA = 6000;
+
+function slotDe(qtd, inicio) {
+  return alocarSlot_(
+    maqAd, inicio || hoje, fimHorizonte, (qtd / PECAS_HORA) * 60, {}, [], [], [], []
+  );
+}
+
+function inicioDe(slot) {
+  return slot ? Util.chaveDia(slot.inicio) : 'sem slot';
+}
+
+/**
+ * O print do PSEB1593: as cinco linhas abaixo de um milheiro voltavam sem slot
+ * e o motor as reportava como "sem capacidade", somando o furo de 2,239.
+ */
+[0.201, 0.33, 0.429, 0.585, 0.694].forEach(function (qtd) {
+  ok('ordem de ' + qtd + ' recebe slot', !!slotDe(qtd));
+});
+ok('ordem de 1,469 continua recebendo slot', !!slotDe(1.469));
+ok('ordem de 43,904 continua recebendo slot', !!slotDe(43.904));
+
+ok(
+  'duracao zero cai no primeiro dia com capacidade',
+  inicioDe(alocarSlot_(maqAd, hoje, fimHorizonte, 0, {}, [], [], [], [])) === '2026-09-10'
+);
+
+Calendario.semTurno['2026-09-10'] = true;
+ok(
+  'ordem minuscula nao inventa capacidade em dia sem turno',
+  inicioDe(slotDe(0.201)) === '2026-09-11'
+);
+delete Calendario.semTurno['2026-09-10'];
+
+Calendario.capacidadeMin = 0;
+ok('horizonte sem nenhuma capacidade continua sem slot', slotDe(0.201) === null);
+Calendario.capacidadeMin = 480;
+
+ok(
+  'ordem maior que o horizonte inteiro continua sem slot',
+  alocarSlot_(maqAd, hoje, Util.somarDias(hoje, 1), 5000, {}, [], [], [], []) === null
+);
+
+const ocupado = {};
+ok(
+  'ordem minuscula consome os minutos que usou',
+  !!alocarSlot_(maqAd, hoje, fimHorizonte, 0.00201, ocupado, [], [], [], []) &&
+    Math.abs(ocupado[maqAd.id]['2026-09-10'] - 0.00201) < 1e-9
+);
+
+/* --------------------------------------------------- fila da lista de pedidos */
+
+function pedido(chave, dataDesejada, fim, sequencia) {
+  return { chave: chave, dataDesejada: dataDesejada, dataPrometida: dataDesejada, fim: fim, sequencia: sequencia };
+}
+
+const comOt0110 = pedido('SO428850|1', '2026-10-01', '2026-09-18', 15);
+const semOt1509 = pedido('SO427393|1', '2026-09-15', '', null);
+ok(
+  'linha sem OT de 15/09 vem antes de OT programada para 18/09',
+  [comOt0110, semOt1509].sort(compararPedidoProducao_)[0] === semOt1509
+);
+ok(
+  'linha sem OT nao passa na frente de OT que ja termina antes dela',
+  [pedido('A|1', '2026-09-20', '', null), pedido('B|1', '2026-09-11', '2026-09-11', 1)]
+    .sort(compararPedidoProducao_)[0].chave === 'B|1'
+);
+ok(
+  'PCP manual continua mandando na fila',
+  [
+    Object.assign(pedido('C|1', '2026-09-11', '2026-09-11', 1), { prioridadeManual: 50 }),
+    Object.assign(pedido('D|1', '2026-10-01', '', null), { prioridadeManual: 10 }),
+  ].sort(compararPedidoProducao_)[0].chave === 'D|1'
+);
+
+/* ------------------------------------------- PLANEJADA herdada fora da janela */
+
+const otimJanela = politicaOtimizacao_(cfg({
+  otimizacao_modo: 'antecipar',
+  otimizacao_semanas_antecipacao: 2,
+  otimizacao_folga_dias: 2,
+}), hoje);
+const semCongela = politicaCongelamento_(cfg({ congelar_dias: 0 }), hoje);
+const dem0110 = { dataDesejada: '2026-10-01' };
+
+ok(
+  'PLANEJADA de 01/10 parada em 14/09 conta como fora da janela',
+  planejadaForaDaJanela_(
+    { tipo: 'PLANEJADA', fim: '2026-09-14', travada: false }, dem0110, semCongela, otimJanela
+  )
+);
+ok(
+  'PLANEJADA de 01/10 colada no alvo JIT nao conta',
+  !planejadaForaDaJanela_(
+    { tipo: 'PLANEJADA', fim: '2026-09-29', travada: false }, dem0110, semCongela, otimJanela
+  )
+);
+ok(
+  'pedido dentro das 2 semanas pode ser antecipado sem virar aviso',
+  !planejadaForaDaJanela_(
+    { tipo: 'PLANEJADA', fim: '2026-09-11', travada: false },
+    { dataDesejada: '2026-09-15' }, semCongela, otimJanela
+  )
+);
+ok(
+  'LIBERADA nao entra no aviso',
+  !planejadaForaDaJanela_(
+    { tipo: 'LIBERADA', fim: '2026-09-14', travada: false }, dem0110, semCongela, otimJanela
+  )
 );
 
 if (falhas) {
