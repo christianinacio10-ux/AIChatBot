@@ -1101,8 +1101,13 @@ const Cadastros = {
   },
 
   demandas(somenteAbertas) {
+    const uns = this.mapaUnidades();
     return Repo.ler(ABAS.demanda)
       .map(function (d) {
+        const unidade = String(d.unidade || '').trim().toUpperCase();
+        const pendente = Util.paraNumero(d.quantidade_pendente);
+        const pecasGravadas = Util.paraNumero(d.quantidade_pecas);
+        const fator = uns[unidade] ? uns[unidade].fatorPecas : null;
         return {
           chave: String(d.chave || '').trim(),
           ordemVenda: String(d.ordem_venda || ''),
@@ -1112,9 +1117,9 @@ const Cadastros = {
           tecnologiaId: String(d.tecnologia_id || '').trim(),
           cliente: String(d.cliente || ''),
           pedidoCliente: String(d.pedido_cliente || ''),
-          unidade: String(d.unidade || '').trim().toUpperCase(),
-          quantidadePendente: Util.paraNumero(d.quantidade_pendente),
-          quantidadePecas: Util.paraNumero(d.quantidade_pecas),
+          unidade: unidade,
+          quantidadePendente: pendente,
+          quantidadePecas: pecasDaDemanda_(pecasGravadas, pendente, fator),
           dataVencimento: dataIsoCadastro_(d.data_vencimento),
           dataPrometida: dataIsoCadastro_(d.data_prometida),
           dataDesejada: dataIsoCadastro_(d.data_desejada),
@@ -1314,6 +1319,20 @@ const Cadastros = {
 function dataIsoCadastro_(valor) {
   const d = Util.paraData(valor);
   return d ? Util.chaveDia(d) : '';
+}
+
+/**
+ * Se quantidade_pecas ficou igual a quantidade_pendente e o fator da unidade
+ * nao e 1, o importador gravou milheiro como peca. Reaplica o fator na leitura
+ * para o motor nao depender da reimportacao depois que UNIDADES for corrigida.
+ */
+function pecasDaDemanda_(pecas, pendente, fator) {
+  if (pecas == null) return pecas;
+  if (fator == null || fator === 1 || pendente == null) return pecas;
+  if (Math.abs(pecas - pendente) > 0.0001) return pecas;
+  const convertido = Util.arredondarPecas(pendente * fator);
+  if (Math.abs(convertido - pecas) <= 0.0001) return pecas;
+  return convertido;
 }
 
 
@@ -3223,16 +3242,15 @@ function planejadaForaDaJanela_(o, demanda, congela, otim) {
 }
 
 /**
- * Data que posiciona a linha na fila: a programada, quando ha OT; a do cliente,
- * quando nao ha. Ordenar so pela sequencia da OT jogava toda linha sem OT para
- * o fim da lista (sequencia nula = 9999), entao um pedido de 01/10 que ja tinha
- * OT aparecia acima de um de 15/09 que ficou sem — exatamente o que escondia o
- * problema do planejador.
+ * Posicao na fila e a urgencia do cliente, nao a data em que a OT nasceu.
+ * Usar o fim da OT deixava o 01/10 (programado em 11/09) acima do 15/09 sem
+ * OT — o planejador via a ordem distante na frente dos pedidos que o cliente
+ * quer antes. Sequencia da OT so desempata quem tem a mesma data.
  */
 function dataFilaProducao_(l) {
-  return isoDia_(l.fim || '') ||
-    isoDia_(l.dataDesejada || '') ||
+  return isoDia_(l.dataDesejada || '') ||
     isoDia_(l.dataPrometida || '') ||
+    isoDia_(l.fim || '') ||
     '9999-12-31';
 }
 

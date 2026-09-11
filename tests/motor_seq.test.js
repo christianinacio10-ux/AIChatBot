@@ -50,6 +50,10 @@ const Util = {
   chaveDia(data) {
     return data.getFullYear() + '-' + this.dois_(data.getMonth() + 1) + '-' + this.dois_(data.getDate());
   },
+  arredondarPecas(valor) {
+    if (valor == null || isNaN(valor)) return 0;
+    return Math.round(valor * 1000) / 1000;
+  },
 };
 
 /**
@@ -92,7 +96,8 @@ vm.runInContext(
   extractFn('alocarSlot_') + '\n' +
   extractFn('planejadaForaDaJanela_') + '\n' +
   extractFn('dataFilaProducao_') + '\n' +
-  extractFn('compararPedidoProducao_'),
+  extractFn('compararPedidoProducao_') + '\n' +
+  extractFn('pecasDaDemanda_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
@@ -104,6 +109,7 @@ const politicaOtimizacao_ = ctx.politicaOtimizacao_;
 const alocarSlot_ = ctx.alocarSlot_;
 const planejadaForaDaJanela_ = ctx.planejadaForaDaJanela_;
 const compararPedidoProducao_ = ctx.compararPedidoProducao_;
+const pecasDaDemanda_ = ctx.pecasDaDemanda_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -345,14 +351,19 @@ function pedido(chave, dataDesejada, fim, sequencia) {
   return { chave: chave, dataDesejada: dataDesejada, dataPrometida: dataDesejada, fim: fim, sequencia: sequencia };
 }
 
-const comOt0110 = pedido('SO428850|1', '2026-10-01', '2026-09-18', 15);
+const comOt0110 = pedido('SO428850|1', '2026-10-01', '2026-09-11', 15);
 const semOt1509 = pedido('SO427393|1', '2026-09-15', '', null);
 ok(
-  'linha sem OT de 15/09 vem antes de OT programada para 18/09',
+  '15/09 sem OT vem antes do 01/10 mesmo com OT nascida em 11/09',
   [comOt0110, semOt1509].sort(compararPedidoProducao_)[0] === semOt1509
 );
 ok(
-  'linha sem OT nao passa na frente de OT que ja termina antes dela',
+  'mesma data do cliente: sequencia da OT desempata',
+  [pedido('A|2', '2026-09-15', '', null), pedido('A|1', '2026-09-15', '2026-09-11', 4)]
+    .sort(compararPedidoProducao_)[0].chave === 'A|1'
+);
+ok(
+  'cliente 11/09 com OT vem antes de cliente 20/09 sem OT',
   [pedido('A|1', '2026-09-20', '', null), pedido('B|1', '2026-09-11', '2026-09-11', 1)]
     .sort(compararPedidoProducao_)[0].chave === 'B|1'
 );
@@ -398,6 +409,23 @@ ok(
   !planejadaForaDaJanela_(
     { tipo: 'LIBERADA', fim: '2026-09-14', travada: false }, dem0110, semCongela, otimJanela
   )
+);
+
+ok(
+  'milheiro gravado como peca reaplica fator 1000 na leitura',
+  pecasDaDemanda_(0.201, 0.201, 1000) === 201
+);
+ok(
+  'pecas ja convertidas nao sao multiplicadas de novo',
+  pecasDaDemanda_(201, 0.201, 1000) === 201
+);
+ok(
+  'fator 1 nao inventa conversao',
+  pecasDaDemanda_(0.201, 0.201, 1) === 0.201
+);
+ok(
+  'sem fator deixa o valor gravado',
+  pecasDaDemanda_(0.201, 0.201, null) === 0.201
 );
 
 if (falhas) {
