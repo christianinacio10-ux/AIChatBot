@@ -50,6 +50,10 @@ const Util = {
   chaveDia(data) {
     return data.getFullYear() + '-' + this.dois_(data.getMonth() + 1) + '-' + this.dois_(data.getDate());
   },
+  arredondarPecas(valor) {
+    if (valor == null || isNaN(valor)) return 0;
+    return Math.round(valor * 1000) / 1000;
+  },
 };
 
 /**
@@ -80,6 +84,8 @@ const ctx = {
 vm.createContext(ctx);
 vm.runInContext(
   extractFn('isoDia_') + '\n' +
+  extractFn('dataEntregaIso_') + '\n' +
+  extractFn('dataDemandaIso_') + '\n' +
   extractFn('dataOrdemIso_') + '\n' +
   extractFn('indicePeriodo_') + '\n' +
   extractFn('ordemEncerrada_') + '\n' +
@@ -92,18 +98,22 @@ vm.runInContext(
   extractFn('alocarSlot_') + '\n' +
   extractFn('planejadaForaDaJanela_') + '\n' +
   extractFn('dataFilaProducao_') + '\n' +
-  extractFn('compararPedidoProducao_'),
+  extractFn('compararPedidoProducao_') + '\n' +
+  extractFn('pecasDaDemanda_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
 const ordemFirme_ = ctx.ordemFirme_;
 const isoDia_ = ctx.isoDia_;
+const dataEntregaIso_ = ctx.dataEntregaIso_;
+const dataDemandaIso_ = ctx.dataDemandaIso_;
 const indicePeriodo_ = ctx.indicePeriodo_;
 const politicaCongelamento_ = ctx.politicaCongelamento_;
 const politicaOtimizacao_ = ctx.politicaOtimizacao_;
 const alocarSlot_ = ctx.alocarSlot_;
 const planejadaForaDaJanela_ = ctx.planejadaForaDaJanela_;
 const compararPedidoProducao_ = ctx.compararPedidoProducao_;
+const pecasDaDemanda_ = ctx.pecasDaDemanda_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -248,6 +258,26 @@ ok('15/09 como Date e ASAP nas 2 semanas', otim.antecipa({ dataDesejada: new Dat
 ok('01/10 com datetime nao e ASAP', !otim.antecipa({ dataDesejada: '2026-10-01T08:00:00' }));
 ok('01/10 como Date nao e ASAP', !otim.antecipa({ dataDesejada: new Date(2026, 9, 1) }));
 ok(
+  '01/10 so no Vcto nao e ASAP em 11/09',
+  !otim.antecipa({ dataVencimento: '2026-10-01', dataDesejada: '', dataPrometida: '' })
+);
+ok(
+  'Vcto manda mesmo se desejada estiver mais cedo',
+  !otim.antecipa({ dataVencimento: '2026-10-01', dataDesejada: '2026-09-15' })
+);
+ok(
+  'Vcto dentro das 2 semanas e ASAP',
+  otim.antecipa({ dataVencimento: '2026-09-20' })
+);
+ok(
+  'demanda da grade senta no Vcto, nao na desejada',
+  dataDemandaIso_({ dataVencimento: '2026-10-01', dataDesejada: '2026-09-15' }) === '2026-10-01'
+);
+ok(
+  'sem Vcto a entrega cai na prometida',
+  dataEntregaIso_({ dataPrometida: '2026-09-22', dataDesejada: '2026-09-15' }) === '2026-09-22'
+);
+ok(
   'modo JIT nunca puxa para hoje',
   !politicaOtimizacao_(cfg({
     otimizacao_modo: 'jit',
@@ -345,14 +375,19 @@ function pedido(chave, dataDesejada, fim, sequencia) {
   return { chave: chave, dataDesejada: dataDesejada, dataPrometida: dataDesejada, fim: fim, sequencia: sequencia };
 }
 
-const comOt0110 = pedido('SO428850|1', '2026-10-01', '2026-09-18', 15);
+const comOt0110 = pedido('SO428850|1', '2026-10-01', '2026-09-11', 15);
 const semOt1509 = pedido('SO427393|1', '2026-09-15', '', null);
 ok(
-  'linha sem OT de 15/09 vem antes de OT programada para 18/09',
+  '15/09 sem OT vem antes do 01/10 mesmo com OT nascida em 11/09',
   [comOt0110, semOt1509].sort(compararPedidoProducao_)[0] === semOt1509
 );
 ok(
-  'linha sem OT nao passa na frente de OT que ja termina antes dela',
+  'mesma data do cliente: sequencia da OT desempata',
+  [pedido('A|2', '2026-09-15', '', null), pedido('A|1', '2026-09-15', '2026-09-11', 4)]
+    .sort(compararPedidoProducao_)[0].chave === 'A|1'
+);
+ok(
+  'cliente 11/09 com OT vem antes de cliente 20/09 sem OT',
   [pedido('A|1', '2026-09-20', '', null), pedido('B|1', '2026-09-11', '2026-09-11', 1)]
     .sort(compararPedidoProducao_)[0].chave === 'B|1'
 );
@@ -372,7 +407,7 @@ const otimJanela = politicaOtimizacao_(cfg({
   otimizacao_folga_dias: 2,
 }), hoje);
 const semCongela = politicaCongelamento_(cfg({ congelar_dias: 0 }), hoje);
-const dem0110 = { dataDesejada: '2026-10-01' };
+const dem0110 = { dataVencimento: '2026-10-01', dataDesejada: '2026-10-01' };
 
 ok(
   'PLANEJADA de 01/10 parada em 14/09 conta como fora da janela',
@@ -398,6 +433,23 @@ ok(
   !planejadaForaDaJanela_(
     { tipo: 'LIBERADA', fim: '2026-09-14', travada: false }, dem0110, semCongela, otimJanela
   )
+);
+
+ok(
+  'milheiro gravado como peca reaplica fator 1000 na leitura',
+  pecasDaDemanda_(0.201, 0.201, 1000) === 201
+);
+ok(
+  'pecas ja convertidas nao sao multiplicadas de novo',
+  pecasDaDemanda_(201, 0.201, 1000) === 201
+);
+ok(
+  'fator 1 nao inventa conversao',
+  pecasDaDemanda_(0.201, 0.201, 1) === 0.201
+);
+ok(
+  'sem fator deixa o valor gravado',
+  pecasDaDemanda_(0.201, 0.201, null) === 0.201
 );
 
 if (falhas) {
