@@ -99,7 +99,9 @@ vm.runInContext(
   extractFn('planejadaForaDaJanela_') + '\n' +
   extractFn('dataFilaProducao_') + '\n' +
   extractFn('compararPedidoProducao_') + '\n' +
-  extractFn('pecasDaDemanda_'),
+  extractFn('pecasDaDemanda_') + '\n' +
+  extractFn('vctoEsperadoIso_') + '\n' +
+  extractFn('inconsistenciaVcto_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
@@ -114,6 +116,8 @@ const alocarSlot_ = ctx.alocarSlot_;
 const planejadaForaDaJanela_ = ctx.planejadaForaDaJanela_;
 const compararPedidoProducao_ = ctx.compararPedidoProducao_;
 const pecasDaDemanda_ = ctx.pecasDaDemanda_;
+const vctoEsperadoIso_ = ctx.vctoEsperadoIso_;
+const inconsistenciaVcto_ = ctx.inconsistenciaVcto_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -450,6 +454,43 @@ ok(
 ok(
   'sem fator deixa o valor gravado',
   pecasDaDemanda_(0.201, 0.201, null) === 0.201
+);
+
+ok(
+  'prom = desejada → vcto esperado e a desejada',
+  vctoEsperadoIso_({ dataDesejada: '2026-09-15', dataPrometida: '2026-09-15' }) === '2026-09-15'
+);
+ok(
+  'prom depois da desejada → vcto esperado e a prometida',
+  vctoEsperadoIso_({ dataDesejada: '2026-09-15', dataPrometida: '2026-10-01' }) === '2026-10-01'
+);
+ok(
+  'vcto igual ao esperado nao sinaliza',
+  !inconsistenciaVcto_({
+    dataDesejada: '2026-09-15', dataPrometida: '2026-10-01', dataVencimento: '2026-10-01',
+  }).ativa
+);
+ok(
+  'vcto diferente de prom quando prom > desejada sinaliza',
+  inconsistenciaVcto_({
+    dataDesejada: '2026-09-15', dataPrometida: '2026-10-01', dataVencimento: '2026-09-15',
+  }).ativa &&
+  inconsistenciaVcto_({
+    dataDesejada: '2026-09-15', dataPrometida: '2026-10-01', dataVencimento: '2026-09-15',
+  }).regra === 'promMaior'
+);
+ok(
+  'vcto diferente da desejada quando prom = desejada sinaliza',
+  inconsistenciaVcto_({
+    dataDesejada: '2026-09-15', dataPrometida: '2026-09-15', dataVencimento: '2026-10-01',
+  }).ativa &&
+  inconsistenciaVcto_({
+    dataDesejada: '2026-09-15', dataPrometida: '2026-09-15', dataVencimento: '2026-10-01',
+  }).regra === 'promIgual'
+);
+ok(
+  'plano nao inventa vcto: sem as tres datas nao ha inconsistencia',
+  !inconsistenciaVcto_({ dataDesejada: '', dataPrometida: '', dataVencimento: '' }).ativa
 );
 
 if (falhas) {
