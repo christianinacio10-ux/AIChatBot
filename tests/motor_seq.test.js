@@ -75,6 +75,7 @@ const ctx = {
   EPS_MIN: extractConst('EPS_MIN'),
   TIPO_ORDEM: { planejada: 'PLANEJADA', liberada: 'LIBERADA', encerrada: 'ENCERRADA' },
   MODO_OTIMIZACAO: { antecipar: 'antecipar', jit: 'jit' },
+  SIM: 'SIM',
   SITUACAO_DEMANDA: { semMaquina: 'SEM_MAQUINA', semUnidade: 'SEM_UNIDADE', bloqueadaMp: 'BLOQUEADA_MP' },
   ESTADO_PRAZO: { noPrazo: 'noPrazo', risco: 'risco', atrasado: 'atrasado', semPrograma: 'semPrograma', bloqueado: 'bloqueado' },
   minutosEfetivosMaquina_(maq, dia) {
@@ -109,6 +110,7 @@ vm.runInContext(
   extractFn('dataSnapshotSo_') + '\n' +
   extractFn('estadoPrazoDatas_') + '\n' +
   extractFn('consumirOcupacaoCalendario_') + '\n' +
+  extractFn('destinoOrdemOrfa_') + '\n' +
   extractFn('vctoEsperadoIso_') + '\n' +
   extractFn('inconsistenciaVcto_'),
   ctx
@@ -133,6 +135,7 @@ const ordemCobreNesteCalculo_ = ctx.ordemCobreNesteCalculo_;
 const estadoPrazoDatas_ = ctx.estadoPrazoDatas_;
 const consumirOcupacaoCalendario_ = ctx.consumirOcupacaoCalendario_;
 const dataSnapshotSo_ = ctx.dataSnapshotSo_;
+const destinoOrdemOrfa_ = ctx.destinoOrdemOrfa_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -644,6 +647,11 @@ ok(
   'depois de 8 h no dia 1 a proxima OT nasce no dia 2, nao em cima',
   ocupCheio['ADTP1-1']['2026-09-11'] > 0
 );
+
+ok('PLANEJADA congelada sem SO some, nao fica REVISAR', destinoOrdemOrfa_('PLANEJADA', 'SIM') === 'apagar');
+ok('PLANEJADA solta sem SO some', destinoOrdemOrfa_('PLANEJADA', 'NAO') === 'apagar');
+ok('LIBERADA sem SO vira TECO', destinoOrdemOrfa_('LIBERADA', 'SIM') === 'encerrar');
+ok('ENCERRADA orfa nao se remexe', destinoOrdemOrfa_('ENCERRADA', 'SIM') === 'manter');
 
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
