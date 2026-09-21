@@ -262,7 +262,7 @@ const MODO_OTIMIZACAO = {
 
 const SEED_CONFIG = [
   ['idioma_padrao', 'pt-BR', 'pt-BR, es ou en'],
-  ['planta_nome', 'ADS Vinhedo', 'Nome da planta no cartao do usuario'],
+  ['planta_nome', 'ADS Blumenau', 'Nome da planta no cartao do usuario'],
   ['tema', 'claro', 'Tema visual: claro ou escuro'],
   ['backlog_planilha_id', '1kBzivgLbjty0oQ3Tmc1jQmoFTpL3sdSKo6-J1P7NTh8', 'ID da planilha de backlog (somente leitura)'],
   ['backlog_aba', 'Backlog', 'Nome da aba do backlog'],
@@ -5759,7 +5759,7 @@ function apiChatEnviar(payload) {
       if (volta === 0 && perguntaOperacionalChat_(texto)) {
         conteudo.push({
           role: 'user',
-          parts: [{ text: 'Olhe os dados com as ferramentas (consultarStatusOrdens, consultarPainel, consultarDemandas, consultarSku, consultarPedido, sugerirPlano) e responda como programador de Vinhedo. Nao diga que nao foi programado e nao anuncie que vai consultar.' }],
+          parts: [{ text: 'Olhe os dados com as ferramentas (consultarStatusOrdens, consultarPainel, consultarDemandas, consultarSku, consultarPedido, sugerirPlano) e responda como programador de Blumenau (Apparel). Nao diga que nao foi programado e nao anuncie que vai consultar.' }],
         });
         continue;
       }
@@ -5865,7 +5865,7 @@ function instrucaoSistemaChat_(idioma, estado) {
   }[idioma] || 'portugues brasileiro';
 
   return [
-    'Voce e o programador de producao da planta ADS Vinhedo (Avery Dennison Apparel — Service Bureau RFID e Non RFID). Vinte anos de PCP: MPS, MRP, sequenciamento, freeze de backlog, ocupacao de turno e service level.',
+    'Voce e o programador de producao da planta ADS Blumenau (Avery Dennison Apparel — Service Bureau RFID e Non RFID). Vinte anos de PCP no segmento apparel: tags, etiquetas, RFID e non RFID, MPS, MRP, sequenciamento, freeze de backlog, ocupacao de turno e service level.',
     'Fale como um colega no corredor da programacao: direto, calmo, com opiniao. Nunca se apresente como modelo, assistente de IA ou chatbot. Nunca diga que esta "atualizando", "consultando" ou "processando". Nao recuse pergunta operacional.',
     'Responda sempre em ' + lingua + '.',
     '',
@@ -6600,7 +6600,7 @@ function apiContexto(idioma) {
   return {
     app: { nome: APP.nome, versao: APP.versao, subtitulo: APP.subtitulo },
     usuario: identificarUsuario_(),
-    planta: config.texto('planta_nome', 'ADS Vinhedo'),
+    planta: config.texto('planta_nome', 'ADS Blumenau'),
     idioma: escolhido,
     textos: I18n.dicionario(escolhido),
     idiomasDisponiveis: I18n.lista(),
@@ -6882,7 +6882,7 @@ const I18n = {
       painelSub: 'Ocupacao das tecnologias, maquinas e operadores nos proximos dias',
       planoSub: 'Recortar → calcular → ajustar a fila → criar OTs',
       ganttSub: 'Sequenciamento por maquina — fonte da verdade do plano',
-      chatSub: 'Colega de PCP em Vinhedo: fila, risco, SL e o que fazer agora',
+      chatSub: 'Colega de PCP em Blumenau (Apparel): fila, risco, SL e o que fazer agora',
       slSub: 'Flexibility e Reliability lado a lado',
       emBreveDetalhe: 'Esta area entra na proxima etapa. O esqueleto ja esta no lugar.',
       planoVazio: 'Nenhuma demanda neste grupo. Importe o backlog no Painel.',
@@ -7269,7 +7269,7 @@ const I18n = {
       painelSub: 'Occupancy of technologies, machines and operators for the next days',
       planoSub: 'Cut → calculate → adjust the queue → create OTs',
       ganttSub: 'Machine sequencing — source of truth for the plan',
-      chatSub: 'PCP colleague at Vinhedo: queue, risk, SL and what to do next',
+      chatSub: 'PCP colleague at Blumenau (Apparel): queue, risk, SL and what to do next',
       slSub: 'Flexibility and Reliability side by side',
       emBreveDetalhe: 'This area lands in a later phase. The shell is already in place.',
       planoVazio: 'No demand in this group. Import the backlog from the Dashboard.',
@@ -7656,7 +7656,7 @@ const I18n = {
       painelSub: 'Ocupacion de tecnologias, maquinas y operadores en los proximos dias',
       planoSub: 'Recortar → calcular → ajustar la cola → crear OTs',
       ganttSub: 'Secuenciacion por maquina — fuente de verdad del plan',
-      chatSub: 'Colega de PCP en Vinhedo: cola, riesgo, SL y que hacer ahora',
+      chatSub: 'Colega de PCP en Blumenau (Apparel): cola, riesgo, SL y que hacer ahora',
       slSub: 'Flexibility y Reliability lado a lado',
       emBreveDetalhe: 'Esta area entra en la proxima etapa. El esqueleto ya esta listo.',
       planoVazio: 'Ninguna demanda en este grupo. Importe el backlog en el Panel.',

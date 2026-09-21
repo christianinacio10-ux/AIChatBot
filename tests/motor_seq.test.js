@@ -679,7 +679,7 @@ ok('foto sem ingestao pede importar', textoEstadoChat_({}).indexOf('importe') >=
 ok('UI do Plano liga o botao Importar backlog', src.indexOf('function ligarImportarBacklog') >= 0);
 ok('chat nao usa overlay Atualizando no envio', /Estado\.chat\.digitando = true/.test(src) && !/enviarChatUi[\s\S]{0,200}marcarCarregando\(true\)/.test(src));
 ok('chat tem ferramenta importarBacklog', /importarBacklog:\s*true/.test(src));
-ok('prompt do chat e programador de Vinhedo', src.indexOf('programador de producao da planta ADS Vinhedo') >= 0);
+ok('prompt do chat e programador de Blumenau Apparel', src.indexOf('programador de producao da planta ADS Blumenau') >= 0 && src.indexOf('segmento apparel') >= 0);
 
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
