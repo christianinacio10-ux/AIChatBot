@@ -556,17 +556,21 @@ const CachePainel = {
   LIMITE_BYTES: 95000,
 
   selo() {
+    if (this._memo) return this._memo;
     const props = PropertiesService.getScriptProperties();
     let selo = props.getProperty('CACHE_SELO');
     if (!selo) {
       selo = String(Date.now());
       props.setProperty('CACHE_SELO', selo);
     }
+    this._memo = selo;
     return selo;
   },
 
   invalidar() {
-    PropertiesService.getScriptProperties().setProperty('CACHE_SELO', String(Date.now()));
+    const selo = String(Date.now());
+    this._memo = selo;
+    PropertiesService.getScriptProperties().setProperty('CACHE_SELO', selo);
   },
 
   obter(chave) {
@@ -600,9 +604,12 @@ const CachePainel = {
 const Repo = {
 
   _memoria: {},
+  _abas: {},
+  _cursor: {},
+  _sujo: false,
 
   planilha() {
-    if (this._memoria.planilha) return this._memoria.planilha;
+    if (this._planilha) return this._planilha;
 
     const id = PropertiesService.getScriptProperties().getProperty('PLANILHA_ID');
     const ss = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
@@ -613,20 +620,23 @@ const Repo = {
         'ou vincule este projeto a uma planilha.'
       );
     }
-    this._memoria.planilha = ss;
+    this._planilha = ss;
     return ss;
   },
 
   aba(nome, criarSeFaltar) {
+    if (this._abas[nome]) return this._abas[nome];
     const ss = this.planilha();
     let aba = ss.getSheetByName(nome);
     if (!aba && criarSeFaltar) aba = ss.insertSheet(nome);
     if (!aba) throw new Error('Aba "' + nome + '" nao existe. Rode instalarSistema() primeiro.');
+    this._abas[nome] = aba;
     return aba;
   },
 
   ler(nome) {
     if (this._memoria[nome]) return this._memoria[nome];
+    this.flushAgora_();
 
     const aba = this.aba(nome);
     const ultima = aba.getLastRow();
@@ -665,12 +675,28 @@ const Repo = {
     });
   },
 
+  /**
+   * setValues fica na fila do Apps Script. flush() no meio de um import
+   * ou de um salvar virava uma ida a rede por linha. So descarrega de
+   * verdade antes de reler a aba ou no fim da execucao.
+   */
   descarregar() {
+    this._sujo = true;
+  },
+
+  flushAgora_() {
+    if (!this._sujo) return;
+    this._sujo = false;
     try {
       if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) {
         SpreadsheetApp.flush();
       }
     } catch (e) {}
+  },
+
+  _esquecerIndice(nome) {
+    const mem = this._memoria[nome];
+    if (mem && mem._idx) delete mem._idx;
   },
 
   acrescentar(nome, registros) {
@@ -685,9 +711,12 @@ const Repo = {
       });
     });
 
-    const primeira = Math.max(aba.getLastRow() + 1, 2);
+    if (this._sujo && !this._cursor[nome]) this.flushAgora_();
+    const primeira = this._cursor[nome] || Math.max(aba.getLastRow() + 1, 2);
     aba.getRange(primeira, 1, matriz.length, colunas.length).setValues(matriz);
+    this._cursor[nome] = primeira + matriz.length;
     this.descarregar();
+    this._esquecerIndice(nome);
     this._invalidarDominio();
 
     const memoria = this._memoria[nome];
@@ -736,6 +765,7 @@ const Repo = {
     }
     this.aba(nome).getRange(linha, menor + 1, 1, faixa.length).setValues([faixa]);
     this.descarregar();
+    this._esquecerIndice(nome);
     this._invalidarDominio();
 
     const memoria = this._memoria[nome];
@@ -756,6 +786,7 @@ const Repo = {
     });
     this.aba(nome).getRange(linha, 1, 1, colunas.length).setValues([valores]);
     this.descarregar();
+    this._esquecerIndice(nome);
     this._invalidarDominio();
     const memoria = this._memoria[nome];
     if (memoria) {
@@ -794,19 +825,26 @@ const Repo = {
       i += quantas;
     }
     this.descarregar();
+    this.flushAgora_();
     delete this._memoria[nome];
+    delete this._cursor[nome];
+    delete this._abas[nome];
     this._invalidarDominio();
     return apagadas;
   },
 
   limparMemoria() {
     this._memoria = {};
+    this._abas = {};
+    this._cursor = {};
     this._invalidarDominio();
   },
 
   /** O cache normalizado de Cadastros nasce das linhas cruas; se elas mudam, ele cai. */
   _invalidarDominio() {
-    if (typeof Cadastros !== 'undefined' && Cadastros._cache) Cadastros._cache = {};
+    if (typeof Cadastros === 'undefined') return;
+    Cadastros._cache = {};
+    Cadastros._tecPorId = null;
   },
 
   registrarLog(rotina, status, detalhe) {
@@ -942,18 +980,22 @@ const Cadastros = {
 
   velocidades() {
     const mapa = {};
+    const porItem = {};
     Repo.ler(ABAS.velocidades).forEach(function (v) {
       if (v.ativo !== '' && v.ativo !== null && v.ativo !== undefined && !Util.paraBooleano(v.ativo)) return;
       const item = String(v.item_codigo).trim();
       if (!item) return;
       const maquina = String(v.maquina_id || '*').trim() || '*';
-      mapa[item + '|' + maquina] = {
+      const entrada = {
         itemCodigo: item,
         maquinaId: maquina,
         velocidadeHora: Util.paraNumero(v.velocidade_hora),
         setupPadraoMin: Util.paraNumero(v.setup_padrao_min) || 0,
         _linha: v._linha,
       };
+      mapa[item + '|' + maquina] = entrada;
+      if (!porItem[item]) porItem[item] = [];
+      porItem[item].push(entrada);
     });
     return {
       mapa: mapa,
@@ -961,10 +1003,9 @@ const Cadastros = {
         if (!itemCodigo) return null;
         const direto = mapa[itemCodigo + '|' + maquinaId] || mapa[itemCodigo + '|*'];
         if (direto && direto.velocidadeHora) return direto;
-        const chaves = Object.keys(mapa);
-        for (let i = 0; i < chaves.length; i++) {
-          const cand = mapa[chaves[i]];
-          if (cand.itemCodigo === itemCodigo && cand.velocidadeHora) return cand;
+        const lista = porItem[itemCodigo] || [];
+        for (let i = 0; i < lista.length; i++) {
+          if (lista[i].velocidadeHora) return lista[i];
         }
         return direto || null;
       },
@@ -1008,7 +1049,12 @@ const Cadastros = {
 
   maquinaNaTecnologia_(maq, tecId) {
     if (!maq || !tecId) return false;
-    const tec = this.tecnologias(false).filter(function (t) { return t.id === tecId; })[0];
+    if (!this._tecPorId) {
+      const mapa = {};
+      this.tecnologias(false).forEach(function (t) { mapa[t.id] = t; });
+      this._tecPorId = mapa;
+    }
+    const tec = this._tecPorId[tecId];
     if (!tec) return false;
     if (tec.grupo && maq.grupo && tec.grupo !== maq.grupo) return false;
     const tokens = FAMILIA_TECNOLOGIA[tecId];
@@ -3113,8 +3159,19 @@ function minutosCapacidade_(maq, bucket) {
   return total;
 }
 
+let _minMaqCache = null;
+let _aptosCache = null;
+let _ausCache = null;
+let _turnoCache = null;
+let _minOpCache = null;
+
 function minutosDiaMaquina_(maq, dia, turnos, excecoes) {
   const iso = Util.chaveDia(dia);
+  if (!_minMaqCache || _minMaqCache.turnos !== turnos || _minMaqCache.excecoes !== excecoes) {
+    _minMaqCache = { turnos: turnos, excecoes: excecoes, mapa: {} };
+  }
+  const chaveMaq = (maq && maq.id ? maq.id : '') + '|' + iso;
+  if (_minMaqCache.mapa[chaveMaq] != null) return _minMaqCache.mapa[chaveMaq];
   const dow = dia.getDay();
   let bloqueado = false;
   let extra = 0;
@@ -3131,15 +3188,18 @@ function minutosDiaMaquina_(maq, dia, turnos, excecoes) {
       if (a != null && b != null) extra += b >= a ? b - a : b + 24 * 60 - a;
     }
   });
-  if (bloqueado) return extra;
   let min = 0;
-  turnos.forEach(function (t) {
-    if (t.dias.indexOf(dow) < 0) return;
-    let d = t.fimMin - t.inicioMin;
-    if (d <= 0) d += 24 * 60;
-    min += d;
-  });
-  return min + extra;
+  if (!bloqueado) {
+    turnos.forEach(function (t) {
+      if (t.dias.indexOf(dow) < 0) return;
+      let d = t.fimMin - t.inicioMin;
+      if (d <= 0) d += 24 * 60;
+      min += d;
+    });
+  }
+  const total = min + extra;
+  _minMaqCache.mapa[chaveMaq] = total;
+  return total;
 }
 
 
@@ -4792,11 +4852,29 @@ function alocarConformeOtimizacao_(maq, busca, job, duracaoMin, fimHorizonte, oc
   return alocarSlot_(maq, inicio, fimHorizonte, duracaoMin, ocupado, turnos, excecoes, ops, habs);
 }
 
+function clonarOcupPessoas_(src) {
+  const out = {};
+  if (!src) return out;
+  const ids = Object.keys(src);
+  for (let i = 0; i < ids.length; i++) {
+    const dias = src[ids[i]];
+    if (!dias || typeof dias !== 'object') {
+      out[ids[i]] = dias;
+      continue;
+    }
+    const copia = {};
+    const chaves = Object.keys(dias);
+    for (let k = 0; k < chaves.length; k++) copia[chaves[k]] = dias[chaves[k]];
+    out[ids[i]] = copia;
+  }
+  return out;
+}
+
 function alocarSlot_(maq, inicio, fimHorizonte, duracaoMin, ocupado, turnos, excecoes, ops, habs) {
   if (!ocupado[maq.id]) ocupado[maq.id] = {};
   if (!ocupado.__pessoas) ocupado.__pessoas = {};
   const snapshot = Object.assign({}, ocupado[maq.id]);
-  const snapPessoas = JSON.parse(JSON.stringify(ocupado.__pessoas));
+  const snapPessoas = clonarOcupPessoas_(ocupado.__pessoas);
   let d = Util.inicioDoDia(inicio);
   let restante = Math.max(duracaoMin || 0, 0);
   let comeco = null;
@@ -5060,69 +5138,118 @@ function maquinaTemGenteNoHorizonte_(maq, inicio, fimHorizonte, ops, habs, excec
 }
 
 function pessoasDisponiveis_(maq, dia, ops, habs, excecoes) {
-  const iso = Util.chaveDia(dia);
+  const aptos = operadoresAptos_(maq, dia, ops, habs, excecoes);
   let soma = 0;
-  ops.forEach(function (op) {
-    if (ausenteOp_(op.id, iso, excecoes)) return;
-    const apta = habs.some(function (h) {
-      return h.operadorId === op.id && Cadastros.habilidadeCobreMaquina_(h, maq);
-    });
-    if (!apta) return;
+  for (let i = 0; i < aptos.length; i++) {
+    const op = aptos[i];
     soma += op.capacidade == null ? 1 : op.capacidade;
-  });
-  return soma;
-}
-
-function ausenteOp_(operadorId, iso, excecoes) {
-  for (let i = 0; i < excecoes.length; i++) {
-    const e = excecoes[i];
-    if (e.tipo !== TIPO_EXCECAO.ausenciaOperador) continue;
-    if (e.operadorId && e.operadorId !== operadorId) continue;
-    const ini = Util.chaveDia(e.data);
-    const fim = e.dataFim ? Util.chaveDia(e.dataFim) : ini;
-    if (iso >= ini && iso <= fim) return true;
   }
-  return false;
+  return soma;
 }
 
 function minutosDiaOperador_(op, dia, turnos, excecoes) {
   const iso = Util.chaveDia(dia);
-  if (ausenteOp_(op.id, iso, excecoes)) return 0;
-  const dow = dia.getDay();
-  let feriado = false;
-  let extra = 0;
-  (excecoes || []).forEach(function (e) {
-    const ini = Util.chaveDia(e.data);
-    const end = e.dataFim ? Util.chaveDia(e.dataFim) : ini;
-    if (iso < ini || iso > end) return;
-    if (e.tipo === TIPO_EXCECAO.feriado && !e.maquinaId) feriado = true;
-    if (e.tipo === TIPO_EXCECAO.turnoExtra && !e.maquinaId) {
-      const a = e.inicioMin;
-      const b = e.fimMin;
-      if (a != null && b != null) extra += b >= a ? b - a : b + 24 * 60 - a;
+  if (!_minOpCache || _minOpCache.turnos !== turnos || _minOpCache.excecoes !== excecoes) {
+    _minOpCache = { turnos: turnos, excecoes: excecoes, mapa: {} };
+  }
+  const chaveOp = (op && op.id ? op.id : '') + '|' + iso;
+  if (_minOpCache.mapa[chaveOp] != null) return _minOpCache.mapa[chaveOp];
+  let total = 0;
+  if (!ausenteOp_(op.id, iso, excecoes)) {
+    const dow = dia.getDay();
+    let feriado = false;
+    let extra = 0;
+    (excecoes || []).forEach(function (e) {
+      const ini = Util.chaveDia(e.data);
+      const end = e.dataFim ? Util.chaveDia(e.dataFim) : ini;
+      if (iso < ini || iso > end) return;
+      if (e.tipo === TIPO_EXCECAO.feriado && !e.maquinaId) feriado = true;
+      if (e.tipo === TIPO_EXCECAO.turnoExtra && !e.maquinaId) {
+        const a = e.inicioMin;
+        const b = e.fimMin;
+        if (a != null && b != null) extra += b >= a ? b - a : b + 24 * 60 - a;
+      }
+    });
+    if (!feriado) {
+      const turno = turnoPorId_(turnos)[op.turnoId];
+      const lista = turno ? [turno] : (turnos || []);
+      lista.forEach(function (t) {
+        if (t.dias.indexOf(dow) < 0) return;
+        let d = t.fimMin - t.inicioMin;
+        if (d <= 0) d += 24 * 60;
+        total += d;
+      });
     }
-  });
-  if (feriado) return extra;
-  const turno = (turnos || []).filter(function (t) { return t.id === op.turnoId; })[0];
-  const lista = turno ? [turno] : (turnos || []);
-  let min = 0;
-  lista.forEach(function (t) {
-    if (t.dias.indexOf(dow) < 0) return;
-    let d = t.fimMin - t.inicioMin;
-    if (d <= 0) d += 24 * 60;
-    min += d;
-  });
-  return min + extra;
+    total += extra;
+  }
+  _minOpCache.mapa[chaveOp] = total;
+  return total;
+}
+
+function turnoPorId_(turnos) {
+  if (!_turnoCache || _turnoCache.src !== turnos) {
+    const porId = {};
+    (turnos || []).forEach(function (t) { if (!porId[t.id]) porId[t.id] = t; });
+    _turnoCache = { src: turnos, porId: porId };
+  }
+  return _turnoCache.porId;
+}
+
+function faixaCobre_(lista, iso) {
+  if (!lista) return false;
+  for (let i = 0; i < lista.length; i++) {
+    if (iso >= lista[i].ini && iso <= lista[i].fim) return true;
+  }
+  return false;
+}
+
+function ausenteOp_(operadorId, iso, excecoes) {
+  if (!_ausCache || _ausCache.src !== excecoes) {
+    const globais = [];
+    const porOp = {};
+    (excecoes || []).forEach(function (e) {
+      if (e.tipo !== TIPO_EXCECAO.ausenciaOperador) return;
+      const ini = Util.chaveDia(e.data);
+      const fim = e.dataFim ? Util.chaveDia(e.dataFim) : ini;
+      const faixa = { ini: ini, fim: fim };
+      if (e.operadorId) {
+        if (!porOp[e.operadorId]) porOp[e.operadorId] = [];
+        porOp[e.operadorId].push(faixa);
+      } else globais.push(faixa);
+    });
+    _ausCache = { src: excecoes, globais: globais, porOp: porOp };
+  }
+  return faixaCobre_(_ausCache.globais, iso) || faixaCobre_(_ausCache.porOp[operadorId], iso);
+}
+
+function aptosDaMaquina_(maq, ops, habs) {
+  if (!_aptosCache || _aptosCache.ops !== ops || _aptosCache.habs !== habs) {
+    _aptosCache = { ops: ops, habs: habs, porId: {} };
+  }
+  const id = maq && maq.id ? maq.id : '';
+  if (_aptosCache.porId[id]) return _aptosCache.porId[id];
+  const cobre = {};
+  for (let h = 0; h < (habs || []).length; h++) {
+    const hab = habs[h];
+    if (!hab || !hab.operadorId || cobre[hab.operadorId]) continue;
+    if (Cadastros.habilidadeCobreMaquina_(hab, maq)) cobre[hab.operadorId] = true;
+  }
+  const lista = [];
+  for (let i = 0; i < (ops || []).length; i++) {
+    if (cobre[ops[i].id]) lista.push(ops[i]);
+  }
+  _aptosCache.porId[id] = lista;
+  return lista;
 }
 
 function operadoresAptos_(maq, dia, ops, habs, excecoes) {
   const iso = Util.chaveDia(dia);
-  return (ops || []).filter(function (op) {
-    if (ausenteOp_(op.id, iso, excecoes)) return false;
-    return (habs || []).some(function (h) {
-      return h.operadorId === op.id && Cadastros.habilidadeCobreMaquina_(h, maq);
-    });
-  });
+  const base = aptosDaMaquina_(maq, ops, habs);
+  const out = [];
+  for (let i = 0; i < base.length; i++) {
+    if (!ausenteOp_(base[i].id, iso, excecoes)) out.push(base[i]);
+  }
+  return out;
 }
 
 function duracaoTurno_(turno, dia) {
@@ -5153,7 +5280,7 @@ function minutosLivresOperadores_(maq, dia, ops, habs, excecoes, turnos, ocupPes
     const livre = Math.max(0, capOp - usado);
     if (livre <= 0) return;
     const tid = op.turnoId || ('op:' + op.id);
-    const turno = (turnos || []).filter(function (t) { return t.id === op.turnoId; })[0];
+    const turno = turnoPorId_(turnos)[op.turnoId];
     const teto = turno ? duracaoTurno_(turno, dia) : capOp;
     porTurno[tid] = Math.min(teto, (porTurno[tid] || 0) + livre);
   });
@@ -8592,10 +8719,23 @@ function garantirAbaCadastro_(nome) {
 function localizarPorCampo_(aba, campo, valor) {
   const alvo = String(valor || '').trim();
   const linhas = Repo.ler(aba);
-  for (let i = 0; i < linhas.length; i++) {
-    if (String(linhas[i][campo] || '').trim() === alvo) return linhas[i];
+  if (!linhas._idx) linhas._idx = {};
+  let idx = linhas._idx[campo];
+  if (!idx) {
+    idx = {};
+    for (let i = 0; i < linhas.length; i++) {
+      const k = String(linhas[i][campo] || '').trim();
+      if (k && !idx[k]) idx[k] = linhas[i];
+    }
+    linhas._idx[campo] = idx;
   }
-  return null;
+  if (!alvo) {
+    for (let i = 0; i < linhas.length; i++) {
+      if (String(linhas[i][campo] || '').trim() === '') return linhas[i];
+    }
+    return null;
+  }
+  return idx[alvo] || null;
 }
 
 function anexarSalvo_(pack, entidade, id) {
