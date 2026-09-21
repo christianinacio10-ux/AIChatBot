@@ -75,6 +75,8 @@ const ctx = {
   EPS_MIN: extractConst('EPS_MIN'),
   TIPO_ORDEM: { planejada: 'PLANEJADA', liberada: 'LIBERADA', encerrada: 'ENCERRADA' },
   MODO_OTIMIZACAO: { antecipar: 'antecipar', jit: 'jit' },
+  SITUACAO_DEMANDA: { semMaquina: 'SEM_MAQUINA', semUnidade: 'SEM_UNIDADE', bloqueadaMp: 'BLOQUEADA_MP' },
+  ESTADO_PRAZO: { noPrazo: 'noPrazo', risco: 'risco', atrasado: 'atrasado', semPrograma: 'semPrograma', bloqueado: 'bloqueado' },
   minutosEfetivosMaquina_(maq, dia) {
     return Calendario.semTurno[Util.chaveDia(dia)] ? 0 : Calendario.capacidadeMin;
   },
@@ -97,9 +99,16 @@ vm.runInContext(
   extractFn('escolherProximoJob_') + '\n' +
   extractFn('alocarSlot_') + '\n' +
   extractFn('planejadaForaDaJanela_') + '\n' +
+  extractFn('planejadaQtdDivergente_') + '\n' +
+  extractFn('ordemCobreDemanda_') + '\n' +
+  extractFn('ordemCobreNesteCalculo_') + '\n' +
   extractFn('dataFilaProducao_') + '\n' +
   extractFn('compararPedidoProducao_') + '\n' +
   extractFn('pecasDaDemanda_') + '\n' +
+  extractFn('pecasRestantesDemanda_') + '\n' +
+  extractFn('dataSnapshotSo_') + '\n' +
+  extractFn('estadoPrazoDatas_') + '\n' +
+  extractFn('consumirOcupacaoCalendario_') + '\n' +
   extractFn('vctoEsperadoIso_') + '\n' +
   extractFn('inconsistenciaVcto_'),
   ctx
@@ -118,6 +127,12 @@ const compararPedidoProducao_ = ctx.compararPedidoProducao_;
 const pecasDaDemanda_ = ctx.pecasDaDemanda_;
 const vctoEsperadoIso_ = ctx.vctoEsperadoIso_;
 const inconsistenciaVcto_ = ctx.inconsistenciaVcto_;
+const pecasRestantesDemanda_ = ctx.pecasRestantesDemanda_;
+const planejadaQtdDivergente_ = ctx.planejadaQtdDivergente_;
+const ordemCobreNesteCalculo_ = ctx.ordemCobreNesteCalculo_;
+const estadoPrazoDatas_ = ctx.estadoPrazoDatas_;
+const consumirOcupacaoCalendario_ = ctx.consumirOcupacaoCalendario_;
+const dataSnapshotSo_ = ctx.dataSnapshotSo_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -491,6 +506,143 @@ ok(
 ok(
   'plano nao inventa vcto: sem as tres datas nao ha inconsistencia',
   !inconsistenciaVcto_({ dataDesejada: '', dataPrometida: '', dataVencimento: '' }).ativa
+);
+
+/* ----------------------------- gap legado: netting e cobertura de quantidade */
+
+ok('estoque parcial deixa o liquido', pecasRestantesDemanda_(100, 0, 50) === 50);
+ok('OT parcial deixa o liquido', pecasRestantesDemanda_(201, 0.201, 0) === 200.799);
+ok('cobertura cheia zera o liquido', pecasRestantesDemanda_(100, 60, 40) === 0);
+ok('nao inventa negativo', pecasRestantesDemanda_(10, 20, 0) === 0);
+
+function programarLiquido_(linhas, firme, estoque, jaItem) {
+  const teto = {};
+  linhas.forEach(function (d) { teto[d.item] = (teto[d.item] || 0) + d.pecas; });
+  const propostas = [];
+  const ignoradas = [];
+  const coberto = Object.assign({}, jaItem || {});
+  linhas.forEach(function (d) {
+    const qty = pecasRestantesDemanda_(d.pecas, firme[d.chave] || 0, estoque[d.chave] || 0);
+    if (qty <= 0) { ignoradas.push('coberta'); return; }
+    if ((firme[d.chave] || 0) > 0) { ignoradas.push('otParcial'); return; }
+    const ja = coberto[d.item] || 0;
+    if (ja + qty > teto[d.item] + 0.0001) { ignoradas.push('acima'); return; }
+    propostas.push({ chave: d.chave, qty: qty });
+    coberto[d.item] = ja + qty;
+  });
+  return { propostas: propostas, ignoradas: ignoradas, coberto: coberto };
+}
+
+const skuA = { chave: 'A|1', item: 'SKU', pecas: 100 };
+const skuB = { chave: 'B|1', item: 'SKU', pecas: 80 };
+const velho = programarLiquido_(
+  [skuA, skuB], {}, {}, { SKU: 50 }
+);
+const velhoCheio = (function () {
+  const teto = 180;
+  const ja = 50;
+  const acimaA = ja + 100 > teto + 0.0001;
+  const acimaB = ja + 100 <= teto + 0.0001 && (ja + 100) + 80 > teto + 0.0001;
+  return !acimaA && acimaB;
+})();
+ok('legado: estoque 50 + qtd cheia da A mata a B no teto', velhoCheio);
+
+const liquidoEstoque = programarLiquido_(
+  [skuA, skuB], {}, { 'A|1': 50 }, { SKU: 50 }
+);
+ok(
+  'estoque 50 em A programa 50+80 e fecha o SKU',
+  liquidoEstoque.propostas.length === 2 &&
+    liquidoEstoque.propostas[0].qty === 50 &&
+    liquidoEstoque.propostas[1].qty === 80 &&
+    Math.abs(liquidoEstoque.coberto.SKU - 180) < 0.0001 &&
+    liquidoEstoque.ignoradas.length === 0
+);
+
+const milheiroVelho = programarLiquido_(
+  [{ chave: 'P|1', item: 'P5EB1593', pecas: 201 }], {}, {}, { P5EB1593: 0.201 }
+);
+ok(
+  'legado: PLANEJADA 0,201 contra SO 201 tomava "acima da demanda"',
+  milheiroVelho.ignoradas[0] === 'acima' && milheiroVelho.propostas.length === 0
+);
+const milheiroNovo = programarLiquido_(
+  [{ chave: 'P|1', item: 'P5EB1593', pecas: 201 }], {}, {}, { P5EB1593: 0 }
+);
+ok(
+  'PLANEJADA divergente fora da cobertura programa as 201',
+  milheiroNovo.propostas.length === 1 && milheiroNovo.propostas[0].qty === 201
+);
+
+ok(
+  'LIBERADA parcial nao gera segunda OT',
+  programarLiquido_(
+    [{ chave: 'L|1', item: 'X', pecas: 100 }], { 'L|1': 60 }, {}, { X: 60 }
+  ).ignoradas[0] === 'otParcial'
+);
+
+const dem201 = { quantidadePecas: 201, dataVencimento: '2026-10-01' };
+const ot201 = { tipo: 'PLANEJADA', quantidade: 201, travada: false };
+const otMil = { tipo: 'PLANEJADA', quantidade: 0.201, travada: false };
+const semCongelaQtd = politicaCongelamento_(cfg({ congelar_dias: 0 }), hoje);
+ok(
+  'PLANEJADA com qtd igual continua cobrindo no recalculo novas',
+  ordemCobreNesteCalculo_(ot201, semCongelaQtd, false, dem201, otimJanela)
+);
+ok(
+  'PLANEJADA 0,201 nao cobre SO de 201 pecas',
+  planejadaQtdDivergente_(otMil, dem201) &&
+    !ordemCobreNesteCalculo_(otMil, semCongelaQtd, false, dem201, otimJanela)
+);
+ok(
+  'LIBERADA parcial continua firme mesmo com qtd diferente',
+  ordemCobreNesteCalculo_(
+    { tipo: 'LIBERADA', quantidade: 60, travada: true },
+    semCongelaQtd, false, { quantidadePecas: 100 }, otimJanela
+  )
+);
+
+ok(
+  'snapshot da SO usa Vcto, nao a desejada',
+  dataSnapshotSo_({ data_vencimento: '2026-10-01', data_desejada: '2026-09-15' }) === '2026-10-01'
+);
+ok(
+  'prazo atrasado olha o Vcto, nao a prometida vazia',
+  estadoPrazoDatas_('2026-09-20', '2026-09-15', '', '', true, '2026-09-15') === 'atrasado'
+);
+ok(
+  'fim antes do Vcto e depois da desejada e risco, nao atraso',
+  estadoPrazoDatas_('2026-09-20', '2026-09-15', '2026-10-01', '', true, '2026-10-01') === 'risco'
+);
+ok(
+  'fim na desejada e noPrazo',
+  estadoPrazoDatas_('2026-09-15', '2026-09-15', '2026-10-01', '', true, '2026-10-01') === 'noPrazo'
+);
+ok(
+  'fim depois do Vcto e atrasado',
+  estadoPrazoDatas_('2026-10-05', '2026-09-15', '2026-10-01', '', true, '2026-10-01') === 'atrasado'
+);
+
+ok(
+  'pedido sem data nao fura a cabeca no agrupamento',
+  escolherProximoJob_(
+    [cabeca, job('A|99', 'ITEM_A', '', 10)],
+    'ITEM_A', '', janela, null, hoje
+  ) === cabeca
+);
+
+const ocupCal = { 'ADTP1-1': {}, __pessoas: {} };
+consumirOcupacaoCalendario_(ocupCal, maqAd, hoje, 600, [], [], [], []);
+ok(
+  'job de 10 h no turno de 8 h ocupa dois dias',
+  Math.abs((ocupCal['ADTP1-1']['2026-09-10'] || 0) - 480) < 1e-9 &&
+    Math.abs((ocupCal['ADTP1-1']['2026-09-11'] || 0) - 120) < 1e-9
+);
+const ocupCheio = { 'ADTP1-1': { '2026-09-10': 480 }, __pessoas: {} };
+alocarSlot_(maqAd, hoje, fimHorizonte, 60, ocupCheio, [], [], [], []);
+ok(
+  'depois de 8 h no dia 1 a proxima OT nasce no dia 2, nao em cima',
+  ocupCheio['ADTP1-1']['2026-09-11'] > 0
 );
 
 if (falhas) {
