@@ -229,6 +229,7 @@ const RESTRICAO = {
   semUnidade: 'semUnidade',
   cobertaEstoque: 'cobertaEstoque',
   jaNaMaquina: 'jaCoberta',
+  otParcial: 'otParcial',
   semPecas: 'semPecas',
   acimaDaDemanda: 'acimaDaDemanda',
   gargaloPessoal: 'gargaloPessoal',
@@ -1344,6 +1345,17 @@ function pecasDaDemanda_(pecas, pendente, fator) {
   return convertido;
 }
 
+/**
+ * MTO neteia: programa o que ainda falta nesta PV+Ln. Cobertura binaria
+ * (firme+estoque >= demanda) deixava o resto na fila com a quantidade cheia;
+ * o teto do SKU recusava a linha como "acima da demanda" e o MRP furava
+ * exatamente o saldo — classico depois de milheiro, SO que cresceu ou
+ * estoque cobrindo so uma fatia.
+ */
+function pecasRestantesDemanda_(pecas, firme, estoque) {
+  return Util.arredondarPecas(Math.max(0, (pecas || 0) - (firme || 0) - (estoque || 0)));
+}
+
 
 /************************************************************ 03_Instalador.js */
 
@@ -1774,30 +1786,32 @@ function reconciliarDemanda_(novas) {
       Util.paraNumero(atual.quantidade_pendente) === n.quantidade_pendente;
     const mesmasDatas =
       dataIso_(atual.data_prometida) === n.data_prometida &&
-      dataIso_(atual.data_desejada) === n.data_desejada;
+      dataIso_(atual.data_desejada) === n.data_desejada &&
+      dataIso_(atual.data_vencimento) === n.data_vencimento;
 
     if (atual.situacao === SITUACAO_DEMANDA.encerrada) {
       n.situacao = n.situacao;
     }
 
+    const dataSo = dataSnapshotSo_(n);
     if (!mesmaQtd && antigaPecas != null && novaPecas != null && novaPecas < antigaPecas) {
       resumo.qtdDiminuiu++;
-      const ajuste = ajustarOrdensQuantidade_(n.chave, novaPecas, antigaPecas, n.data_desejada);
+      const ajuste = ajustarOrdensQuantidade_(n.chave, novaPecas, antigaPecas, dataSo);
       resumo.ordensAjustadas += ajuste.ajustadas;
       resumo.ordensRevisao += ajuste.revisao;
       if (ajuste.revisao) n.situacao = SITUACAO_DEMANDA.revisar;
     } else if (!mesmaQtd && antigaPecas != null && novaPecas != null && novaPecas > antigaPecas) {
       resumo.qtdAumentou++;
-      const rev = marcarRevisaoOrdemFirme_(n.chave, novaPecas, n.data_desejada);
+      const rev = marcarRevisaoOrdemFirme_(n.chave, novaPecas, dataSo);
       resumo.ordensRevisao += rev;
       if (rev) n.situacao = SITUACAO_DEMANDA.revisar;
     }
 
     if (!mesmasDatas) {
       resumo.datasMudaram++;
-      const revData = marcarRevisaoOrdemFirme_(n.chave, novaPecas, n.data_desejada);
+      const revData = marcarRevisaoOrdemFirme_(n.chave, novaPecas, dataSo);
       resumo.ordensRevisao += revData;
-      if (ordemViolaData_(n.chave, n.data_desejada)) {
+      if (ordemViolaData_(n.chave, dataSo)) {
         n.situacao = SITUACAO_DEMANDA.riscoData;
       }
     }
@@ -2087,6 +2101,7 @@ function mesmaFatiaBacklog_(a, b) {
   return a.quantidade_pendente === b.quantidade_pendente &&
     a.data_desejada === b.data_desejada &&
     a.data_prometida === b.data_prometida &&
+    a.data_vencimento === b.data_vencimento &&
     a.item_codigo === b.item_codigo;
 }
 
@@ -2504,8 +2519,8 @@ function montarPlano(grupoOuFiltro, hoje) {
       l.sequencia = (l.plano && l.plano.sequencia != null) ? l.plano.sequencia : null;
       const temPrograma = !!(l.cobertura && l.cobertura !== COBERTURA.semOrdem && l.fim && !(l.plano && l.plano.semData));
       l.estadoPrazo = estadoPrazoDatas_(
-        l.fim, l.dataDesejada, l.dataPrometida, l.situacao, temPrograma);
-      l.atrasoDias = diasAtrasoIso_(l.fim, l.dataPrometida || l.dataDesejada || l.dataEntrega);
+        l.fim, l.dataDesejada, l.dataPrometida, l.situacao, temPrograma, l.dataVencimento);
+      l.atrasoDias = diasAtrasoIso_(l.fim, dataEntregaIso_(l));
       l.inconsistenciaVcto = inconsistenciaVcto_(l);
       l.mrpBuraco = !!negativo;
       const diag = inferirRestricaoLinha_(l, cob, firmesPorMaq[l.maquinaId || (l.plano && l.plano.maquinaId)] || [], congelaPlano);
@@ -2747,6 +2762,20 @@ function dataDemandaIso_(d) {
 }
 
 /**
+ * Snapshot da data do cliente na OT: a mesma regra da fila (Vcto, depois
+ * prometida, depois desejada). Accita camelCase da leitura e snake_case
+ * do importador.
+ */
+function dataSnapshotSo_(d) {
+  if (!d) return '';
+  return dataEntregaIso_({
+    dataVencimento: d.dataVencimento || d.data_vencimento,
+    dataPrometida: d.dataPrometida || d.data_prometida,
+    dataDesejada: d.dataDesejada || d.data_desejada,
+  });
+}
+
+/**
  * Regra do CS, so para sinalizar. O plano nao grava data:
  * prom = desejada → vcto tem que ser a desejada;
  * prom > desejada → vcto tem que ser a prometida.
@@ -2820,7 +2849,7 @@ function divergenciaSoLinha_(l, cob) {
   }
   const qtdOt = cob.qtdOt != null ? cob.qtdOt : cob.pecas;
   const qtdSo = l.pecas;
-  const dataSo = l.dataDesejada || l.dataPrometida || '';
+  const dataSo = dataEntregaIso_(l);
   const dataSnap = cob.dataSoSnapshot || '';
   const qtdMudou = qtdOt != null && qtdSo != null && Math.abs(qtdOt - qtdSo) > 0.0001;
   const dataMudou = !!(dataSnap && dataSo && dataSnap !== dataSo);
@@ -3115,7 +3144,8 @@ function ordemFirme_(o, congela) {
  * MTO: uma PV+Ln so pode ter uma OT viva. LIBERADA e firme cobrem a chave.
  * ENCERRADA com pedido ainda no backlog NAO cobre — o motor pode criar
  * outra PLANEJADA. Pedido que ja saiu do backlog nem entra na fila.
- * `recalcularAbertas=false` (novas): PLANEJADA existente tambem cobre.
+ * `recalcularAbertas=false` (novas): PLANEJADA existente cobre so se a
+ * quantidade ainda bate com a SO e ela nao furou a janela JIT.
  */
 function ordemCobreDemanda_(o, congela, recalcularAbertas) {
   if (!o) return false;
@@ -3128,13 +3158,27 @@ function ordemCobreDemanda_(o, congela, recalcularAbertas) {
 
 /**
  * Recalcular novas preserva PLANEJADA no slot, exceto a que furou a janela
- * de antecipacao: o 01/10 nascido em 11/09 nao pode continuar ocupando
- * setembro so porque ja existia.
+ * de antecipacao ou ficou com quantidade velha (milheiro, SO que cresceu).
+ * Sem o teste de qtd o 0,201 gravado cobria a chave de 201 pecas, o teto
+ * do SKU recusava a linha e o furo nunca fechava.
  */
 function ordemCobreNesteCalculo_(o, congela, recalcularAbertas, demanda, otim) {
   if (!ordemCobreDemanda_(o, congela, recalcularAbertas)) return false;
   if (recalcularAbertas) return true;
+  if (planejadaQtdDivergente_(o, demanda)) return false;
   return !planejadaForaDaJanela_(o, demanda, congela, otim);
+}
+
+/**
+ * PLANEJADA solta cuja quantidade nao e mais a da SO. Recalcular novas
+ * tem que troca-la, nao "cobrir" a chave com o lote antigo.
+ */
+function planejadaQtdDivergente_(o, demanda) {
+  if (!o || o.tipo !== TIPO_ORDEM.planejada) return false;
+  if (ordemEncerrada_(o) || !demanda) return false;
+  const qOt = Util.arredondarPecas(o.quantidade || 0);
+  const qSo = Util.arredondarPecas(demanda.quantidadePecas || 0);
+  return Math.abs(qOt - qSo) > 0.0001;
 }
 
 function coberturaOrdem_(o, congela) {
@@ -3168,7 +3212,7 @@ function diasAtrasoIso_(fim, limite) {
   return Math.round((Util.inicioDoDia(a).getTime() - Util.inicioDoDia(b).getTime()) / MS_DIA);
 }
 
-function estadoPrazoDatas_(fimIso, desejada, prometida, situacao, temPrograma) {
+function estadoPrazoDatas_(fimIso, desejada, prometida, situacao, temPrograma, vencimento) {
   const sit = String(situacao || '').toUpperCase();
   if (sit === SITUACAO_DEMANDA.semMaquina ||
       sit === SITUACAO_DEMANDA.semUnidade ||
@@ -3176,9 +3220,9 @@ function estadoPrazoDatas_(fimIso, desejada, prometida, situacao, temPrograma) {
     return ESTADO_PRAZO.bloqueado;
   }
   if (!temPrograma || !fimIso) return ESTADO_PRAZO.semPrograma;
-  const prom = prometida || desejada || '';
-  const dese = desejada || '';
-  if (prom && fimIso > prom) return ESTADO_PRAZO.atrasado;
+  const entrega = isoDia_(vencimento || prometida || desejada || '');
+  const dese = isoDia_(desejada || '');
+  if (entrega && fimIso > entrega) return ESTADO_PRAZO.atrasado;
   if (dese && fimIso > dese) return ESTADO_PRAZO.risco;
   return ESTADO_PRAZO.noPrazo;
 }
@@ -3229,6 +3273,12 @@ function textoRestricao_(codigo, ctx) {
   if (codigo === RESTRICAO.semUnidade) return 'Unidade sem fator de pecas — quantidade nao converte.';
   if (codigo === RESTRICAO.cobertaEstoque) return 'Atendida pelo saldo em estoque.';
   if (codigo === RESTRICAO.jaNaMaquina) return 'Ja coberta por OT firme ou criada nesta PV+Ln.';
+  if (codigo === RESTRICAO.otParcial) {
+    const falta = ctx.pecas != null ? ctx.pecas : '';
+    return 'OT viva nesta PV+Ln cobre so parte da demanda' +
+      (falta !== '' ? ' (faltam ' + falta + ' pç)' : '') +
+      '. O motor nao cria segunda OT — ajuste a quantidade da OT ou encerre e recrie.';
+  }
   if (codigo === RESTRICAO.semOrdemMrp) {
     return 'Sem OT nesta PV+Ln e o item fecha negativo no MRP. Recalcule para o motor gravar o motivo.';
   }
@@ -3547,10 +3597,13 @@ function montarSugestao(grupoOuFiltro, hoje) {
     if (!cobre && !ordemFirme_(o, congela)) return;
     if (ordemEncerrada_(o)) return;
     if (!ocupado[o.maquinaId]) ocupado[o.maquinaId] = {};
-    consumirOcupacao_(ocupado[o.maquinaId], o.inicio, o.fim, o.setupMin, duracaoOrdemMin_(o, vel, maqs));
     const maqTravada = mapaMaqs[o.maquinaId];
+    const durTravada = duracaoOrdemMin_(o, vel, maqs);
     if (maqTravada) {
-      consumirPessoasOrdem_(o, maqTravada, vel, maqs, ops, habs, turnos, excecoes, ocupado.__pessoas);
+      consumirOcupacaoCalendario_(
+        ocupado, maqTravada, o.inicio, durTravada, turnos, excecoes, ops, habs);
+    } else {
+      consumirOcupacao_(ocupado[o.maquinaId], o.inicio, o.fim, o.setupMin, durTravada);
     }
     if (ordemFirme_(o, congela)) travadas.push(o.chaveDemanda);
   });
@@ -3605,25 +3658,38 @@ function montarSugestao(grupoOuFiltro, hoje) {
     const fila = demandas.filter(function (d) { return d.maquinaId === maq.id; })
       .filter(function (d) {
         /**
-         * Linha ja atendida por ordem LIBERADA/travada ou pelo saldo fisico
-         * sai da fila. Sem isso o furo de 4.266 reaparecia no dia 01/09 mesmo
-         * com pecas ja feitas — a projecao MRP desconta a demanda, mas o motor
-         * nao via a oferta.
+         * Neteia firme+estoque. Cobertura cheia sai da fila. OT viva parcial
+         * (LIBERADA/travada) nao gera segunda OT — MTO de PV+Ln. O resto
+         * (estoque parcial, PLANEJADA com qtd velha) segue com a quantidade
+         * liquida; senão o teto do SKU mata a linha como "acima da demanda".
          */
         const pecasFirmes = cobertoFirme[d.chave] || 0;
         const pecasEstoque = cobertoEstoque[d.chave] || 0;
-        const coberta = (pecasFirmes + pecasEstoque) >= (d.quantidadePecas || 0);
-        if (!coberta) return true;
-        ignoradas.push({
-          tipo: pecasEstoque ? 'cobertaEstoque' : 'jaCoberta',
-          item: d.itemCodigo,
-          chave: d.chave,
-          pecas: pecasFirmes + pecasEstoque,
-          restricao: pecasEstoque ? RESTRICAO.cobertaEstoque : RESTRICAO.jaNaMaquina,
-          restricaoTexto: textoRestricao_(
-            pecasEstoque ? RESTRICAO.cobertaEstoque : RESTRICAO.jaNaMaquina, {}),
-        });
-        return false;
+        const restante = pecasRestantesDemanda_(d.quantidadePecas, pecasFirmes, pecasEstoque);
+        if (restante <= 0) {
+          ignoradas.push({
+            tipo: pecasEstoque ? 'cobertaEstoque' : 'jaCoberta',
+            item: d.itemCodigo,
+            chave: d.chave,
+            pecas: pecasFirmes + pecasEstoque,
+            restricao: pecasEstoque ? RESTRICAO.cobertaEstoque : RESTRICAO.jaNaMaquina,
+            restricaoTexto: textoRestricao_(
+              pecasEstoque ? RESTRICAO.cobertaEstoque : RESTRICAO.jaNaMaquina, {}),
+          });
+          return false;
+        }
+        if (pecasFirmes > 0) {
+          ignoradas.push({
+            tipo: 'otParcial',
+            item: d.itemCodigo,
+            chave: d.chave,
+            pecas: restante,
+            restricao: RESTRICAO.otParcial,
+            restricaoTexto: textoRestricao_(RESTRICAO.otParcial, { pecas: restante }),
+          });
+          return false;
+        }
+        return true;
       })
       .sort(compararDemandaPlano_);
 
@@ -3664,7 +3730,11 @@ function montarSugestao(grupoOuFiltro, hoje) {
       const idx = restantes.indexOf(job);
       if (idx >= 0) restantes.splice(idx, 1);
 
-      const qty = job.quantidadePecas || 0;
+      const qty = pecasRestantesDemanda_(
+        job.quantidadePecas,
+        cobertoFirme[job.chave] || 0,
+        cobertoEstoque[job.chave] || 0
+      );
       const jaItem = cobertoItem[job.itemCodigo] || 0;
       const tetoItem = demandaPorItem[job.itemCodigo] || 0;
       if (!qty || jaItem + qty > tetoItem + 0.0001) {
@@ -3729,13 +3799,12 @@ function montarSugestao(grupoOuFiltro, hoje) {
       const iniIso = Util.chaveDia(slot.inicio);
       const entrega = dataEntregaIso_(job);
       const desejada = isoDia_(job.dataDesejada || '');
-      const prometida = isoDia_(job.dataPrometida || desejada || entrega);
       let estado = 'noPrazo';
-      if (prometida && fimIso > prometida) { estado = 'atrasado'; atrasadas++; }
+      if (entrega && fimIso > entrega) { estado = 'atrasado'; atrasadas++; }
       else if (desejada && fimIso > desejada) { estado = 'risco'; }
       else noPrazo++;
 
-      const atrasoDias = diasAtrasoIso_(fimIso, prometida || entrega);
+      const atrasoDias = diasAtrasoIso_(fimIso, entrega);
       const fimFila = firmesMaq.length
         ? dataOrdemIso_(firmesMaq[firmesMaq.length - 1])
         : '';
@@ -3839,6 +3908,9 @@ function montarSugestao(grupoOuFiltro, hoje) {
   const planejadasForaDaJanela = recalcularAbertas ? 0 : ordens.filter(function (o) {
     return planejadaForaDaJanela_(o, demandaPorChave[o.chaveDemanda], congela, otim);
   }).length;
+  const planejadasQtdDivergente = recalcularAbertas ? 0 : ordens.filter(function (o) {
+    return planejadaQtdDivergente_(o, demandaPorChave[o.chaveDemanda]);
+  }).length;
 
   return {
     grupo: filtroGrupo,
@@ -3867,7 +3939,18 @@ function montarSugestao(grupoOuFiltro, hoje) {
       jaCoberta: ignoradas.filter(function (a) {
         return a.tipo === 'jaCoberta' || a.tipo === 'cobertaEstoque';
       }).length,
+      otParcial: ignoradas.filter(function (a) { return a.tipo === 'otParcial'; }).length,
       gargaloPessoal: gargaloPessoal,
+      travadas: travadas.length,
+      congeladas: travadas.length,
+      opCriadas: ordens.filter(function (o) { return o.tipo === TIPO_ORDEM.liberada; }).length,
+      backlogSemOrdem: demandas.filter(function (d) { return !cobertoFirme[d.chave]; }).length,
+      ordensOrfasRemovidas: 0,
+      ordensFirmesOrfas: 0,
+      mrpBuracos: reparo.buracos.length,
+      reparosMrp: reparo.movidas,
+      planejadasForaDaJanela: planejadasForaDaJanela,
+      planejadasQtdDivergente: planejadasQtdDivergente,
       travadas: travadas.length,
       congeladas: travadas.length,
       opCriadas: ordens.filter(function (o) { return o.tipo === TIPO_ORDEM.liberada; }).length,
@@ -4060,7 +4143,7 @@ function apiLiberarPlanejadas(payload) {
       origem: ORIGEM.manual,
       atualizado_em: agora,
       qtd_so_snapshot: d.quantidadePecas != null ? d.quantidadePecas : o.quantidade,
-      data_so_snapshot: isoDia_(d.dataDesejada || d.dataPrometida || ''),
+      data_so_snapshot: dataSnapshotSo_(d),
     });
   });
 
@@ -4260,7 +4343,7 @@ function apiResolverRevisaoOt(payload) {
     Repo.atualizarCelulas(ABAS.ordens, ordem._linha, {
       revisao: '',
       qtd_so_snapshot: demanda ? demanda.quantidadePecas : ordem.quantidade,
-      data_so_snapshot: demanda ? (demanda.dataDesejada || demanda.dataPrometida || '') : '',
+      data_so_snapshot: demanda ? dataSnapshotSo_(demanda) : '',
       atualizado_em: agora,
     });
   } else if (acao === 'ajustarQtd') {
@@ -4274,7 +4357,7 @@ function apiResolverRevisaoOt(payload) {
       quantidade: qtdSo,
       revisao: '',
       qtd_so_snapshot: qtdSo,
-      data_so_snapshot: demanda.dataDesejada || demanda.dataPrometida || '',
+      data_so_snapshot: dataSnapshotSo_(demanda),
       atualizado_em: agora,
     });
   } else if (acao === 'encerrarRecalcular') {
@@ -4394,7 +4477,8 @@ function jobPiorQueCabeca_(j, cabeca) {
 function jobNaJanelaCabeca_(j, cabeca, janelaDias) {
   const cabecaIso = dataEntregaIso_(cabeca);
   const jobIso = dataEntregaIso_(j);
-  if (!cabecaIso || !jobIso) return true;
+  if (!jobIso) return false;
+  if (!cabecaIso) return true;
   const base = Util.paraData(cabecaIso);
   if (!base) return true;
   const limite = Util.chaveDia(Util.somarDias(base, janelaDias || 0));
@@ -4440,6 +4524,40 @@ function consumirOcupacao_(mapa, inicio, fim, setupMin, duracaoMin) {
     mapa[iso] = (mapa[iso] || 0) + Math.min(resto, 24 * 60);
     resto -= 24 * 60;
     d = Util.somarDias(d, 1);
+  }
+}
+
+/**
+ * Ocupa o mesmo calendario do alocarSlot_: turno efetivo, nao 24 h.
+ * Job de 10 h num turno de 8 h tem que bloquear dois dias; o laco antigo
+ * despejava 600 min no primeiro dia (acima da cap) e deixava o segundo
+ * livre — a proxima OT nascia em cima da que ja estava rodando.
+ */
+function consumirOcupacaoCalendario_(ocupado, maq, inicio, duracaoMin, turnos, excecoes, ops, habs) {
+  if (!maq) return;
+  if (!ocupado[maq.id]) ocupado[maq.id] = {};
+  if (!ocupado.__pessoas) ocupado.__pessoas = {};
+  let resto = duracaoMin || 0;
+  if (resto <= EPS_MIN) return;
+  let d = Util.inicioDoDia(Util.paraData(inicio) || new Date());
+  let n = 0;
+  let ultimoIso = '';
+  while (resto > EPS_MIN && n++ < 400) {
+    const iso = Util.chaveDia(d);
+    const cap = minutosEfetivosMaquina_(maq, d, turnos, excecoes, ops, habs, ocupado.__pessoas);
+    const usado = ocupado[maq.id][iso] || 0;
+    const livre = Math.max(0, cap - usado);
+    const usa = Math.min(livre, resto);
+    if (usa > EPS_MIN) {
+      ocupado[maq.id][iso] = usado + usa;
+      consumirMinutosOperadores_(maq, d, usa, ops, habs, excecoes, turnos, ocupado.__pessoas);
+      resto -= usa;
+      ultimoIso = iso;
+    }
+    d = Util.somarDias(d, 1);
+  }
+  if (resto > EPS_MIN && ultimoIso) {
+    ocupado[maq.id][ultimoIso] = (ocupado[maq.id][ultimoIso] || 0) + resto;
   }
 }
 
@@ -4661,6 +4779,7 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
     if (o.tipo !== TIPO_ORDEM.planejada) return;
     if (recalcularAbertas) return;
     if (chavesProp[o.chaveDemanda]) return;
+    if (planejadaQtdDivergente_(o, porChaveDemanda[o.chaveDemanda])) return;
     const d = porChaveDemanda[o.chaveDemanda] || {};
     extra.push({
       id: o.id,
@@ -4712,7 +4831,8 @@ function repararBuracosMrp_(propostas, demandas, ordens, maqs, mapaMaqs, ocupado
       if (!o || ordemEncerrada_(o)) return;
       if (jaProp[o.chaveDemanda] && !ordemFirme_(o, congela)) return;
       const cobre = o.tipo === TIPO_ORDEM.liberada || ordemFirme_(o, congela) ||
-        (!recalcularAbertas && o.tipo === TIPO_ORDEM.planejada);
+        (!recalcularAbertas && o.tipo === TIPO_ORDEM.planejada &&
+          !planejadaQtdDivergente_(o, porChaveDemanda[o.chaveDemanda]));
       if (!cobre) return;
       const iso = dataOrdemIso_(o);
       const idx = indicePeriodo_(horizonte, iso);
@@ -4812,9 +4932,13 @@ function reconstruirOcupacaoMrp_(maqs, ordens, propostas, exceptId, vel, mapaMaq
       (!recalcularAbertas && o.tipo === TIPO_ORDEM.planejada);
     if (!cobre) return;
     if (!ocupado[o.maquinaId]) ocupado[o.maquinaId] = {};
-    consumirOcupacao_(ocupado[o.maquinaId], o.inicio, o.fim, o.setupMin, duracaoOrdemMin_(o, vel, maqs));
     const maq = mapaMaqs[o.maquinaId];
-    if (maq) consumirPessoasOrdem_(o, maq, vel, maqs, ops, habs, turnos, excecoes, ocupado.__pessoas);
+    const dur = duracaoOrdemMin_(o, vel, maqs);
+    if (maq) {
+      consumirOcupacaoCalendario_(ocupado, maq, o.inicio, dur, turnos, excecoes, ops, habs);
+    } else {
+      consumirOcupacao_(ocupado[o.maquinaId], o.inicio, o.fim, o.setupMin, dur);
+    }
   });
   (propostas || []).forEach(function (p) {
     if (p.id === exceptId) return;
@@ -4827,9 +4951,13 @@ function reconstruirOcupacaoMrp_(maqs, ordens, propostas, exceptId, vel, mapaMaq
       inicio: Util.paraData(p.inicio),
       fim: Util.paraData(p.fim),
     };
-    consumirOcupacao_(ocupado[p.maquina_id], o.inicio, o.fim, o.setupMin, duracaoOrdemMin_(o, vel, maqs));
     const maq = mapaMaqs[p.maquina_id];
-    if (maq) consumirPessoasOrdem_(o, maq, vel, maqs, ops, habs, turnos, excecoes, ocupado.__pessoas);
+    const dur = duracaoOrdemMin_(o, vel, maqs);
+    if (maq) {
+      consumirOcupacaoCalendario_(ocupado, maq, o.inicio, dur, turnos, excecoes, ops, habs);
+    } else {
+      consumirOcupacao_(ocupado[p.maquina_id], o.inicio, o.fim, o.setupMin, dur);
+    }
   });
   return ocupado;
 }
@@ -6603,6 +6731,7 @@ const I18n = {
       motivo_maquinaForaDoGrupo: 'maquina fora do grupo',
       motivo_chaveDuplicada: 'chave duplicada',
       motivo_acimaDaDemanda: 'acima da demanda',
+      motivo_otParcial: 'OT parcial nesta PV+Ln',
       motivo_filaMaquina: 'fila da maquina',
       motivo_congelamento: 'horizonte congelado',
       motivo_campanhaCor: 'campanha de cor/setup',
@@ -6984,6 +7113,7 @@ const I18n = {
       motivo_maquinaForaDoGrupo: 'machine outside the group',
       motivo_chaveDuplicada: 'duplicate key',
       motivo_acimaDaDemanda: 'above demand',
+      motivo_otParcial: 'partial work order on this SO+item',
       motivo_filaMaquina: 'machine queue',
       motivo_congelamento: 'frozen horizon',
       motivo_campanhaCor: 'color/setup campaign',
@@ -7365,6 +7495,7 @@ const I18n = {
       motivo_maquinaForaDoGrupo: 'maquina fuera del grupo',
       motivo_chaveDuplicada: 'clave duplicada',
       motivo_acimaDaDemanda: 'arriba de la demanda',
+      motivo_otParcial: 'OT parcial en esta PV+Ln',
       motivo_filaMaquina: 'cola de la maquina',
       motivo_congelamento: 'horizonte congelado',
       motivo_campanhaCor: 'campana de color/setup',
