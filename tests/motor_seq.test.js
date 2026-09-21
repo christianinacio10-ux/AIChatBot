@@ -112,7 +112,9 @@ vm.runInContext(
   extractFn('consumirOcupacaoCalendario_') + '\n' +
   extractFn('destinoOrdemOrfa_') + '\n' +
   extractFn('vctoEsperadoIso_') + '\n' +
-  extractFn('inconsistenciaVcto_'),
+  extractFn('inconsistenciaVcto_') + '\n' +
+  extractFn('perguntaOperacionalChat_') + '\n' +
+  extractFn('textoEstadoChat_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
@@ -136,6 +138,8 @@ const estadoPrazoDatas_ = ctx.estadoPrazoDatas_;
 const consumirOcupacaoCalendario_ = ctx.consumirOcupacaoCalendario_;
 const dataSnapshotSo_ = ctx.dataSnapshotSo_;
 const destinoOrdemOrfa_ = ctx.destinoOrdemOrfa_;
+const perguntaOperacionalChat_ = ctx.perguntaOperacionalChat_;
+const textoEstadoChat_ = ctx.textoEstadoChat_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -652,6 +656,30 @@ ok('PLANEJADA congelada sem SO some, nao fica REVISAR', destinoOrdemOrfa_('PLANE
 ok('PLANEJADA solta sem SO some', destinoOrdemOrfa_('PLANEJADA', 'NAO') === 'apagar');
 ok('LIBERADA sem SO vira TECO', destinoOrdemOrfa_('LIBERADA', 'SIM') === 'encerrar');
 ok('ENCERRADA orfa nao se remexe', destinoOrdemOrfa_('ENCERRADA', 'SIM') === 'manter');
+
+ok('pergunta de risco e operacional', perguntaOperacionalChat_('quais ordens estao em risco?'));
+ok('SKU e operacional', perguntaOperacionalChat_('como esta o item P5EB1593?'));
+ok('importar backlog e operacional', perguntaOperacionalChat_('importa o backlog'));
+ok('obrigado nao forca ferramenta', !perguntaOperacionalChat_('obrigado'));
+ok('oi nao forca ferramenta', !perguntaOperacionalChat_('oi, tudo bem?'));
+
+const foto = textoEstadoChat_({
+  demandasAbertas: 12,
+  pecasAbertas: 8000,
+  ordens: 4,
+  flexibilityPct: 91,
+  reliabilityPct: 97,
+  ingestao: { quando: '2026-09-21', detalhe: '12 abertas' },
+  pendencias: ['maquina_sem_velocidade'],
+});
+ok('foto do chat traz Flexibility em texto, nao JSON de KPI', foto.indexOf('Flexibility: 91%') >= 0 && foto.indexOf('"kpis"') < 0);
+ok('foto cita a ultima importacao', foto.indexOf('2026-09-21') >= 0);
+ok('foto sem ingestao pede importar', textoEstadoChat_({}).indexOf('importe') >= 0);
+
+ok('UI do Plano liga o botao Importar backlog', src.indexOf('function ligarImportarBacklog') >= 0);
+ok('chat nao usa overlay Atualizando no envio', /Estado\.chat\.digitando = true/.test(src) && !/enviarChatUi[\s\S]{0,200}marcarCarregando\(true\)/.test(src));
+ok('chat tem ferramenta importarBacklog', /importarBacklog:\s*true/.test(src));
+ok('prompt do chat e programador de Blumenau Apparel', src.indexOf('programador de producao da planta ADS Blumenau') >= 0 && src.indexOf('segmento apparel') >= 0);
 
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
