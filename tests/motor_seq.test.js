@@ -95,6 +95,8 @@ vm.runInContext(
   extractFn('ordemFirme_') + '\n' +
   extractFn('politicaCongelamento_') + '\n' +
   extractFn('politicaOtimizacao_') + '\n' +
+  extractFn('diasAntecipacaoDeConfig_') + '\n' +
+  extractFn('unidadeAntecipacaoDeConfig_') + '\n' +
   extractFn('jobPiorQueCabeca_') + '\n' +
   extractFn('jobNaJanelaCabeca_') + '\n' +
   extractFn('escolherProximoJob_') + '\n' +
@@ -322,6 +324,7 @@ const otim1s = politicaOtimizacao_(cfg({
   otimizacao_folga_dias: 2,
 }), dia21);
 ok('1 semana em 21/09: 28/09 ainda e ASAP', otim1s.antecipa({ dataVencimento: '2026-09-28' }));
+ok('1 semana continua 7 dias na tela', otim1s.diasAntecipacao === 7 && otim1s.painel.valor === 1 && otim1s.painel.unidade === 'semanas');
 ok('1 semana em 21/09: 29/09 ja nao e ASAP', !otim1s.antecipa({ dataVencimento: '2026-09-29' }));
 ok(
   '23/09 dentro da semana comeca hoje (21/09)',
@@ -354,6 +357,19 @@ ok(
     otimizacao_semanas_antecipacao: 0,
     otimizacao_folga_dias: 2,
   }), dia21), 60)) === '2026-09-29'
+);
+const otim3d = politicaOtimizacao_(cfg({
+  otimizacao_modo: 'antecipar',
+  otimizacao_antecipacao_dias: 3,
+  otimizacao_antecipacao_unidade: 'dias',
+  otimizacao_semanas_antecipacao: 2,
+}), dia21);
+ok('3 dias mandam mais que a semana antiga', otim3d.diasAntecipacao === 3 && otim3d.painel.unidade === 'dias' && otim3d.painel.valor === 3);
+ok('24/09 com 3 dias a partir de 21/09 ainda e agora', otim3d.antecipa({ dataVencimento: '2026-09-24' }));
+ok('25/09 com 3 dias ja espera a janela', !otim3d.antecipa({ dataVencimento: '2026-09-25' }));
+ok(
+  '29/09 com 3 dias comeca em 26/09',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-29' }, busca21, otim3d, 60)) === '2026-09-26'
 );
 
 function projetar(demanda, oferta, estoque) {
