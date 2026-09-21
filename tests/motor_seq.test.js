@@ -114,7 +114,8 @@ vm.runInContext(
   extractFn('vctoEsperadoIso_') + '\n' +
   extractFn('inconsistenciaVcto_') + '\n' +
   extractFn('perguntaOperacionalChat_') + '\n' +
-  extractFn('textoEstadoChat_'),
+  extractFn('textoEstadoChat_') + '\n' +
+  extractFn('dataInicioOtimizacao_'),
   ctx
 );
 const escolherProximoJob_ = ctx.escolherProximoJob_;
@@ -140,6 +141,7 @@ const dataSnapshotSo_ = ctx.dataSnapshotSo_;
 const destinoOrdemOrfa_ = ctx.destinoOrdemOrfa_;
 const perguntaOperacionalChat_ = ctx.perguntaOperacionalChat_;
 const textoEstadoChat_ = ctx.textoEstadoChat_;
+const dataInicioOtimizacao_ = ctx.dataInicioOtimizacao_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -312,6 +314,48 @@ ok(
   }), hoje).antecipa({ dataDesejada: '2026-09-15' })
 );
 
+const dia21 = new Date(2026, 8, 21);
+const busca21 = Util.inicioDoDia(dia21);
+const otim1s = politicaOtimizacao_(cfg({
+  otimizacao_modo: 'antecipar',
+  otimizacao_semanas_antecipacao: 1,
+  otimizacao_folga_dias: 2,
+}), dia21);
+ok('1 semana em 21/09: 28/09 ainda e ASAP', otim1s.antecipa({ dataVencimento: '2026-09-28' }));
+ok('1 semana em 21/09: 29/09 ja nao e ASAP', !otim1s.antecipa({ dataVencimento: '2026-09-29' }));
+ok(
+  '23/09 dentro da semana comeca hoje (21/09)',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-23' }, busca21, otim1s, 120)) === '2026-09-21'
+);
+ok(
+  '29/09 com 1 semana comeca 7 dias antes do Vcto (22/09), nao 1 dia antes',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-29' }, busca21, otim1s, 120)) === '2026-09-22'
+);
+ok(
+  '30/09 com 1 semana comeca em 23/09 e pode usar quinta/sexta ociosas',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-30' }, busca21, otim1s, 120)) === '2026-09-23'
+);
+ok(
+  'folga JIT nao manda no modo antecipar fora da janela',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-29' }, busca21, otim1s, 120)) !== '2026-09-27'
+);
+ok(
+  'JIT continua colado com folga de 2 dias',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-29' }, busca21, politicaOtimizacao_(cfg({
+    otimizacao_modo: 'jit',
+    otimizacao_semanas_antecipacao: 1,
+    otimizacao_folga_dias: 2,
+  }), dia21), 60)) === '2026-09-27'
+);
+ok(
+  '0 semanas: 29/09 comeca no Vcto',
+  Util.chaveDia(dataInicioOtimizacao_({ dataVencimento: '2026-09-29' }, busca21, politicaOtimizacao_(cfg({
+    otimizacao_modo: 'antecipar',
+    otimizacao_semanas_antecipacao: 0,
+    otimizacao_folga_dias: 2,
+  }), dia21), 60)) === '2026-09-29'
+);
+
 function projetar(demanda, oferta, estoque) {
   const out = [];
   let acc = estoque || 0;
@@ -442,9 +486,15 @@ ok(
   )
 );
 ok(
-  'PLANEJADA de 01/10 colada no alvo JIT nao conta',
+  'PLANEJADA de 01/10 colada na janela de 2 semanas antes do Vcto nao conta',
   !planejadaForaDaJanela_(
     { tipo: 'PLANEJADA', fim: '2026-09-29', travada: false }, dem0110, semCongela, otimJanela
+  )
+);
+ok(
+  'PLANEJADA 18/09 para 01/10 nas 2 semanas de antecipacao e valida',
+  !planejadaForaDaJanela_(
+    { tipo: 'PLANEJADA', fim: '2026-09-18', travada: false }, dem0110, semCongela, otimJanela
   )
 );
 ok(
