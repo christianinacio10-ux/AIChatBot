@@ -100,6 +100,7 @@ vm.runInContext(
   extractFn('jobPiorQueCabeca_') + '\n' +
   extractFn('jobNaJanelaCabeca_') + '\n' +
   extractFn('escolherProximoJob_') + '\n' +
+  extractFn('clonarOcupPessoas_') + '\n' +
   extractFn('alocarSlot_') + '\n' +
   extractFn('planejadaForaDaJanela_') + '\n' +
   extractFn('planejadaQtdDivergente_') + '\n' +
@@ -144,6 +145,7 @@ const destinoOrdemOrfa_ = ctx.destinoOrdemOrfa_;
 const perguntaOperacionalChat_ = ctx.perguntaOperacionalChat_;
 const textoEstadoChat_ = ctx.textoEstadoChat_;
 const dataInicioOtimizacao_ = ctx.dataInicioOtimizacao_;
+const clonarOcupPessoas_ = ctx.clonarOcupPessoas_;
 if (!escolherProximoJob_) throw new Error('falha ao extrair escolherProximoJob_');
 
 const hoje = new Date(2026, 8, 10); // 10/09/2026
@@ -746,6 +748,15 @@ ok('UI do Plano liga o botao Importar backlog', src.indexOf('function ligarImpor
 ok('chat nao usa overlay Atualizando no envio', /Estado\.chat\.digitando = true/.test(src) && !/enviarChatUi[\s\S]{0,200}marcarCarregando\(true\)/.test(src));
 ok('chat tem ferramenta importarBacklog', /importarBacklog:\s*true/.test(src));
 ok('prompt do chat e programador de Blumenau Apparel', src.indexOf('programador de producao da planta ADS Blumenau') >= 0 && src.indexOf('segmento apparel') >= 0);
+
+ok('copia da ocupacao de pessoas nao vaza para o original', (function () {
+  const srcOcup = { OP1: { '2026-09-21': 40 } };
+  const copia = clonarOcupPessoas_(srcOcup);
+  copia.OP1['2026-09-21'] = 99;
+  copia.OP2 = { '2026-09-22': 1 };
+  return srcOcup.OP1['2026-09-21'] === 40 && !srcOcup.OP2 && copia.OP1['2026-09-21'] === 99;
+})());
+ok('gravar planilha nao da flush por linha', /descarregar\(\) \{\s*this\._sujo = true;/.test(src));
 
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
