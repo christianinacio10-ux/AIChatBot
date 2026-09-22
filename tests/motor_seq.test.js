@@ -921,6 +921,83 @@ ok('DEMANDA guarda o texto cru da tecnologia e da maquina',
   /'tecnologia_bruta', 'codigo_maquina_bruto'/.test(src));
 ok('MAQUINAS tem a coluna tecnologias', /\n    'tecnologias',\n/.test(src));
 
+/**
+ * Plano congelado: a foto tem que sobreviver ao recalculo, entao o relatorio
+ * le a aba PLANO_CONGELADO e nao o plano de agora.
+ */
+(function () {
+  const congeladas = [
+    {
+      snapshot_id: 'CONG-A', gerado_em: '2026-09-21T08:00:00', gerado_por: 'pcp@ads',
+      escopo: 'SB_NON_RFID', grupo: 'SB_NON_RFID',
+      tecnologia_id: 'TEC_PAPER_THERMAL', tecnologia: 'Paper Thermal',
+      maquina_id: 'S500-10', maquina: 'S500-10', ordem_id: 'ORD-1', chave: 'PV1|10',
+      item_codigo: 'IT1', item_descricao: 'Etiqueta', cliente: 'DASS',
+      pecas: 1000, minutos: 120, inicio: '2026-09-21T06:20:00', fim: '2026-09-21T08:20:00',
+      tipo: 'PLANEJADA', travada: 'SIM', data_vencimento: '2026-09-30',
+    },
+    {
+      snapshot_id: 'CONG-A', gerado_em: '2026-09-21T08:00:00', gerado_por: 'pcp@ads',
+      escopo: 'SB_NON_RFID', grupo: 'SB_NON_RFID',
+      tecnologia_id: 'TEC_PAPER_THERMAL', tecnologia: 'Paper Thermal',
+      maquina_id: 'S500-1', maquina: 'S500-1', ordem_id: 'ORD-2', chave: 'PV2|10',
+      item_codigo: 'IT2', item_descricao: 'Etiqueta 2', cliente: 'NIKE',
+      pecas: 500, minutos: 60, inicio: '2026-09-28T06:20:00', fim: '2026-09-28T07:20:00',
+      tipo: 'LIBERADA', travada: 'NAO', data_vencimento: '2026-10-05',
+    },
+    {
+      snapshot_id: 'CONG-B', gerado_em: '2026-09-22T08:00:00', gerado_por: 'pcp@ads',
+      escopo: 'SB_RFID', grupo: 'SB_RFID',
+      tecnologia_id: 'TEC_ADTP', tecnologia: 'ADTP',
+      maquina_id: 'ADTP1-1', maquina: 'ADTP1-1', ordem_id: 'ORD-3', chave: 'PV3|10',
+      item_codigo: 'IT3', item_descricao: 'RFID', cliente: 'DASS',
+      pecas: 300, minutos: 30, inicio: '2026-09-23T06:20:00', fim: '2026-09-23T06:50:00',
+      tipo: 'PLANEJADA', travada: 'SIM', data_vencimento: '2026-10-01',
+    },
+  ];
+  const ctxCong = {
+    MS_DIA: 24 * 60 * 60 * 1000,
+    ABAS: { congelado: 'PLANO_CONGELADO' },
+    garantirAbaCadastro_() {},
+    Repo: { limparMemoria() {}, lerOpcional() { return congeladas; } },
+  };
+  vm.createContext(ctxCong);
+  vm.runInContext(
+    'var Util = {' + [
+      'paraData', 'inicioDoDia', 'somarDias', 'dois_', 'chaveDia',
+      'formatarISO', 'formatarHora', 'paraBooleano', 'paraNumero', 'semanaISO',
+    ].map(extractMetodo).join(',\n') + '};\n' +
+    extractFn('dataIsoCadastro_') + '\n' +
+    extractFn('lerPlanoCongelado_') + '\n' +
+    extractFn('apiRelatorioCongelado'),
+    ctxCong
+  );
+
+  const ultimo = ctxCong.apiRelatorioCongelado({});
+  ok('relatorio abre no congelamento mais recente', ultimo.snapshotId === 'CONG-B');
+  ok('so as ordens daquela foto entram',
+    ultimo.totais.ordens === 1 && ultimo.totais.pecas === 300);
+  ok('os congelamentos anteriores continuam listados',
+    ultimo.snapshots.length === 2 &&
+    ultimo.snapshots.map(function (s) { return s.id; }).indexOf('CONG-A') >= 0);
+
+  const antigo = ctxCong.apiRelatorioCongelado({ snapshotId: 'CONG-A' });
+  ok('da para voltar num congelamento anterior',
+    antigo.snapshotId === 'CONG-A' && antigo.micro.length === 2);
+  ok('macro soma pecas e horas por tecnologia e semana',
+    antigo.macro.length === 2 &&
+    antigo.macro[0].pecas === 1000 && antigo.macro[0].horas === 2 &&
+    antigo.macro[1].pecas === 500 && antigo.macro[1].semana !== antigo.macro[0].semana);
+  ok('micro sai ordenado por maquina', antigo.micro[0].maquina === 'S500-1');
+})();
+
+ok('aba PLANO_CONGELADO guarda a foto do congelamento',
+  src.indexOf("congelado: 'PLANO_CONGELADO'") >= 0 &&
+  /function gravarPlanoCongelado_/.test(src) &&
+  /gravarPlanoCongelado_\(escopo, payload, agora, congela\)/.test(src));
+ok('Excel do congelado sai com produzido e aderencia em branco',
+  /t\('colPecasProduzidas'\), t\('colDataProduzida'\), t\('colAderencia'\)/.test(src));
+
 ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
   src.indexOf('arrasteTravadoOrdem') >= 0);
 ok('busca ativa nao cancela mais o arraste',
