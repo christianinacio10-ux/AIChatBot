@@ -1146,6 +1146,7 @@ function contextoPerfil(acessos, padrao, email) {
     !permitida('priorizarDemanda', 'OPERADOR'));
   ok('PCP continua com tudo',
     permitida('priorizarDemanda', 'PCP') && permitida('sugerirPlano', 'PCP'));
+  ok('PCP nao abre pedido de prioridade para si', !permitida('pedirPrioridade', 'PCP'));
   ok('recalcular o plano inteiro fica so com o PCP', !permitida('sugerirPlano', 'CS'));
 })();
 
@@ -1157,13 +1158,19 @@ function contextoPerfil(acessos, padrao, email) {
   const solicitacoes = [];
   const ajustes = [];
   const memoria = [];
+  const linhasDemanda = [
+    { chave: 'SO429146|10', ordemVenda: 'SO429146', cliente: 'DASS', itemCodigo: 'IT1', dataVencimento: '2026-10-02', dataDesejada: '2026-10-01', situacao: 'OK' },
+    { chave: 'SO429366|10', ordemVenda: 'SO429366', cliente: 'KISSSOL', itemCodigo: 'IT2', dataDesejada: '2026-09-22', situacao: 'OK' },
+    { chave: 'SO429366|20', ordemVenda: 'SO429366', cliente: 'KISSSOL', itemCodigo: 'IT3', dataDesejada: '2026-09-22', situacao: 'OK' },
+  ];
   let perfil = 'CS';
 
   const ctxSol = {
     ABAS: { solicitacoes: 'SOLICITACOES', ajustes: 'DEMANDA_AJUSTES' },
     PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
     STATUS_SOLICITACAO: { aberta: 'ABERTA', aprovada: 'APROVADA', recusada: 'RECUSADA' },
-    TIPO_SOLICITACAO: { prioridade: 'PRIORIDADE', recado: 'RECADO' },
+    TIPO_SOLICITACAO: { prioridade: 'PRIORIDADE', recado: 'RECADO', data: 'DATA' },
+    STATUS_DATA: { provisoria: 'PROVISORIA', definitiva: 'DEFINITIVA' },
     ORIGEM: { manual: 'MANUAL', chatbot: 'CHATBOT' },
     CachePainel: { invalidar() {} },
     garantirAbaCadastro_() {},
@@ -1179,12 +1186,24 @@ function contextoPerfil(acessos, padrao, email) {
     },
     Util: {
       gerarId(p) { return p + '-' + (solicitacoes.length + 1); },
-      paraData(v) { return v instanceof Date ? v : null; },
+      dois_(n) { return n < 10 ? '0' + n : String(n); },
+      chaveDia(data) {
+        return data.getFullYear() + '-' + this.dois_(data.getMonth() + 1) + '-' + this.dois_(data.getDate());
+      },
+      paraData(v) {
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+        const texto = String(v || '').trim();
+        const iso = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) return new Date(+iso[1], +iso[2] - 1, +iso[3]);
+        const br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+        if (br) return new Date(+br[3], +br[2] - 1, +br[1]);
+        return null;
+      },
       formatarISO(d) { return d.toISOString().slice(0, 16); },
       paraNumero(v) { return v === '' || v == null ? null : Number(v); },
     },
     Cadastros: {
-      demandas() { return [{ chave: 'SO429146|10', cliente: 'DASS', itemCodigo: 'IT1', dataVencimento: '2026-10-02' }]; },
+      demandas() { return linhasDemanda; },
       ajustes() {
         const mapa = {};
         ajustes.forEach(function (a) { mapa[a.chave] = a; });
@@ -1223,10 +1242,18 @@ function contextoPerfil(acessos, padrao, email) {
     extractFn('pacoteSolicitacoes_') + '\n' +
     extractFn('normalizarChaveSolicitacao_') + '\n' +
     extractFn('acharDemandaSolicitacao_') + '\n' +
+    extractFn('dataIso_') + '\n' +
+    extractFn('rankSolicitacao_') + '\n' +
+    extractFn('normalizarDataPedida_') + '\n' +
+    extractFn('linhasParaPedidoData_') + '\n' +
+    extractFn('pedidoDataAberto_') + '\n' +
+    extractFn('mapaDatasProvisorias_') + '\n' +
+    extractFn('promoverDatasDefinitivas_') + '\n' +
     extractFn('gravarPrioridadeAjuste_') + '\n' +
     extractFn('aplicarPrioridadeChave_') + '\n' +
     extractFn('textoRespostaSolicitacao_') + '\n' +
     extractFn('apiSolicitarPrioridade') + '\n' +
+    extractFn('apiPedirData') + '\n' +
     extractFn('apiResponderSolicitacao'),
     ctxSol
   );
@@ -1271,6 +1298,45 @@ function contextoPerfil(acessos, padrao, email) {
   const doCs = ctxSol.pacoteSolicitacoes_();
   ok('o CS ve o proprio pedido e a resposta',
     doCs.lista.length === 1 && doCs.lista[0].status === 'APROVADA' && !doCs.podeAprovar);
+
+  const ajustesAntes = ajustes.length;
+  const dataUm = ctxSol.apiPedirData({ chave: 'SO429366|10', data: '15/11/2026', texto: 'cliente pediu para postergar' });
+  ok('pedido de data nao mexe na fila nem na desejada oficial',
+    dataUm.pedidos.length === 1 && dataUm.pedidos[0].dataOficial === '2026-09-22' &&
+    dataUm.dataPedida === '2026-11-15');
+  ok('pedido de data nao grava prioridade', ajustes.length === ajustesAntes);
+  ok('a desejada da demanda continua a oficial', linhasDemanda[1].dataDesejada === '2026-09-22');
+
+  const dataPv = ctxSol.apiPedirData({ chave: 'SO429366', data: '2026-11-20', texto: 'o PV inteiro' });
+  ok('PV sem linha abre um pedido por linha que ainda nao tem',
+    dataPv.pedidos.length === 1 && dataPv.pedidos[0].chave === 'SO429366|20' &&
+    dataPv.jaAbertos.indexOf('SO429366|10') >= 0);
+
+  let csAprovaData = '';
+  try { ctxSol.apiResponderSolicitacao({ id: dataUm.pedidos[0].id, decisao: 'aprovar' }); }
+  catch (e) { csAprovaData = e.message; }
+  ok('CS nao aprova a propria data', csAprovaData.indexOf('CS') >= 0);
+
+  perfil = 'PCP';
+  const aprovada = ctxSol.apiResponderSolicitacao({ id: dataUm.pedidos[0].id, decisao: 'aprovar' });
+  const gravada = solicitacoes.filter(function (s) { return s.id === dataUm.pedidos[0].id; })[0];
+  ok('aprovar data deixa provisoria e nao sobe a fila',
+    gravada.data_status === 'PROVISORIA' && ajustes.length === ajustesAntes &&
+    aprovada.respondida.tipo === 'DATA');
+  ok('o plano le a data provisoria sem trocar a oficial',
+    ctxSol.mapaDatasProvisorias_()['SO429366|10'] === '2026-11-15' &&
+    linhasDemanda[1].dataDesejada === '2026-09-22');
+
+  ok('import com data diferente nao promove', ctxSol.promoverDatasDefinitivas_() === 0 &&
+    gravada.data_status === 'PROVISORIA');
+  linhasDemanda[1].dataDesejada = '2026-11-15';
+  const memoriaAntes = memoria.length;
+  ok('import com a mesma data torna definitiva', ctxSol.promoverDatasDefinitivas_() === 1);
+  ok('o chat do CS avisa que a data deixou de ser provisoria',
+    memoria.length === memoriaAntes + 1 &&
+    memoria[memoria.length - 1].email === 'cs@ads' &&
+    memoria[memoria.length - 1].texto.indexOf('Deixou de ser provisoria') >= 0);
+  ok('depois de definitiva o selo some', !ctxSol.mapaDatasProvisorias_()['SO429366|10']);
 })();
 
 ok('escrita no plano so passa com perfil PCP', (function () {
@@ -1286,6 +1352,12 @@ ok('pendencias ficam so com quem aprova',
   src.indexOf('function vePendencias()') >= 0 &&
   src.indexOf("return pode('aprovar')") >= 0 &&
   src.indexOf('sem-pendencias') >= 0);
+ok('o prompt do CS nao manda opinar como PCP',
+  src.indexOf('Opine como PCP') < 0 &&
+  src.indexOf('Quem esta falando e do Customer Service') >= 0 &&
+  src.indexOf('responda o pedido inteiro') >= 0);
+ok('import promove a data quando o backlog coincide',
+  src.indexOf('resumo.datasDefinitivas = promoverDatasDefinitivas_()') >= 0);
 ok('o gatilho de backlog nao passa pela trava de perfil',
   /function importarBacklog\(\) \{\n  const resumo = importarBacklogAgora_\(\);/.test(src));
 
