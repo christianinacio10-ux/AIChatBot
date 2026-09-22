@@ -998,6 +998,69 @@ ok('aba PLANO_CONGELADO guarda a foto do congelamento',
 ok('Excel do congelado sai com produzido e aderencia em branco',
   /t\('colPecasProduzidas'\), t\('colDataProduzida'\), t\('colAderencia'\)/.test(src));
 
+/**
+ * Chatbot: a escrita ja confirmada nao pode voltar como cartao de
+ * confirmacao, senao a conversa entra no loop que o planejador viu.
+ */
+(function () {
+  let roteiro = [];
+  const ctxChat = {
+    encodeURIComponent: encodeURIComponent,
+    JSON: JSON,
+    CHAT_FERRAMENTAS_LEITURA: { consultarPainel: true },
+    CHAT_FERRAMENTAS_ESCRITA: { priorizarDemanda: true },
+    Cadastros: { config() { return { texto() { return 'gemini-2.5-flash'; } }; } },
+    instrucaoSistemaChat_() { return ''; },
+    resumoEstadoChat_() { return {}; },
+    executarLeituraChat_() { return { ok: true }; },
+    resumoEscritaChat_(nome, args) { return nome + ' ' + (args.chave || ''); },
+    chamarGemini_() { return roteiro.shift(); },
+  };
+  vm.createContext(ctxChat);
+  vm.runInContext(
+    extractFn('textoDasPartsChat_') + '\n' +
+    extractFn('argsChat_') + '\n' +
+    extractFn('perguntaOperacionalChat_') + '\n' +
+    extractFn('assinaturaEscritaChat_') + '\n' +
+    extractFn('montarConteudoChat_') + '\n' +
+    extractFn('rodarTurnoChat_'),
+    ctxChat
+  );
+
+  const chamada = {
+    candidates: [{ content: { parts: [{ functionCall: { name: 'priorizarDemanda', args: { chave: 'PV1|10', prioridade: 10 } } }] } }],
+  };
+  const fala = { candidates: [{ content: { parts: [{ text: 'A nova data e 12/11.' }] } }] };
+
+  roteiro = [chamada];
+  const primeira = ctxChat.rodarTurnoChat_([], 'pt-BR', 'k', { pergunta: 'priorize a PV1' });
+  ok('escrita nova pede confirmacao', primeira.tipo === 'confirmacao' && primeira.acao === 'priorizarDemanda');
+
+  roteiro = [chamada, fala];
+  const aplicadas = {};
+  aplicadas[ctxChat.assinaturaEscritaChat_('priorizarDemanda', { chave: 'PV1|10', prioridade: 10 })] = { ok: true };
+  const segunda = ctxChat.rodarTurnoChat_([], 'pt-BR', 'k', { aplicadas: aplicadas });
+  ok('escrita ja aplicada nao vira cartao de novo',
+    segunda.tipo === 'texto' && segunda.texto.indexOf('12/11') >= 0);
+
+  const so = ctxChat.montarConteudoChat_(
+    [{ papel: 'usuario', texto: 'priorize a PV1' }, { papel: 'modelo', texto: 'posso aplicar?' }], ''
+  );
+  ok('confirmacao nao inventa turno vazio do usuario',
+    so.length === 2 && so[1].role === 'model');
+})();
+
+ok('conversa e caderno de regras moram na planilha',
+  src.indexOf("chatMemoria: 'CHAT_MEMORIA'") >= 0 &&
+  src.indexOf("chatNotas: 'CHAT_NOTAS'") >= 0 &&
+  /function apiChatHistorico/.test(src));
+ok('chat tem ferramenta de anotar preferencia',
+  /anotarPreferencia: true/.test(src) && /name: 'anotarPreferencia'/.test(src));
+ok('as notas entram no prompt do sistema',
+  /textoNotasChat_\(\),/.test(src) && /function textoNotasChat_/.test(src));
+ok('confirmar continua o turno em vez de encerrar',
+  /rodarTurnoChat_\(conteudo, idioma, chave, \{\s*\n\s*aplicadas: aplicadas,/.test(src));
+
 ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
   src.indexOf('arrasteTravadoOrdem') >= 0);
 ok('busca ativa nao cancela mais o arraste',
