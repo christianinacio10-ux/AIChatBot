@@ -1361,6 +1361,59 @@ ok('import promove a data quando o backlog coincide',
 ok('o gatilho de backlog nao passa pela trava de perfil',
   /function importarBacklog\(\) \{\n  const resumo = importarBacklogAgora_\(\);/.test(src));
 
+(function () {
+  const ctxGantt = { console: console };
+  vm.createContext(ctxGantt);
+  vm.runInContext(extractFn('ganttOperadoresPosto_'), ctxGantt);
+  const dias = ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25'];
+  const quadro = ctxGantt.ganttOperadoresPosto_([
+    {
+      id: 'OP1', nome: 'Daiana',
+      ocupacao: [
+        { iso: '2026-09-22', maquinas: [{ id: 'S500-10', nome: 'S500-10' }, { id: 'S500-10', nome: 'S500-10' }] },
+        { iso: '2026-09-23', maquinas: [{ id: 'S500-10', nome: 'S500-10' }] },
+        { iso: '2026-09-24', maquinas: [{ id: 'ADTP-1', nome: 'ADTP 1' }] },
+        { iso: '2026-09-25', maquinas: [] },
+      ],
+    },
+    {
+      id: 'OP2', nome: 'Marcos',
+      ocupacao: [
+        { iso: '2026-09-22', maquinas: [{ id: 'S500-10', nome: 'S500-10' }] },
+        { iso: '2026-09-23', maquinas: [] },
+        { iso: '2026-09-24', maquinas: [{ id: 'S500-10', nome: 'S500-10' }] },
+        { iso: '2026-09-25', maquinas: [{ id: 'S500-10', nome: 'S500-10' }] },
+      ],
+    },
+  ], dias);
+  const s500 = quadro.maquinas.filter(function (m) { return m.id === 'S500-10'; })[0];
+  const adtp = quadro.maquinas.filter(function (m) { return m.id === 'ADTP-1'; })[0];
+  const barra = function (lista, op, ini) {
+    return (lista || []).filter(function (b) { return b.operadorId === op && b.inicio === ini; })[0];
+  };
+  ok('gantt junta dias seguidos do mesmo operador na maquina',
+    quadro.inicio === '2026-09-22' && quadro.fim === '2026-09-25' &&
+    quadro.maquinas[0].id === 'ADTP-1' &&
+    barra(s500.barras, 'OP1', '2026-09-22').fim === '2026-09-23' &&
+    barra(s500.barras, 'OP2', '2026-09-22').fim === '2026-09-22' &&
+    barra(s500.barras, 'OP2', '2026-09-24').fim === '2026-09-25' &&
+    adtp.barras.length === 1 && adtp.barras[0].inicio === '2026-09-24');
+  ok('gantt sem ocupacao nao inventa maquina',
+    ctxGantt.ganttOperadoresPosto_([], dias).maquinas.length === 0);
+})();
+
+ok('meu posto devolve o quadro de operador por maquina',
+  src.indexOf('gantt: ganttOperadoresPosto_(dirigidos, dias)') >= 0);
+ok('a tela de posto desenha o gantt',
+  src.indexOf('function htmlGanttPosto') >= 0 && src.indexOf('posto-gantt-barra') >= 0);
+ok('nomenclatura SAP saiu do texto do sistema', (function () {
+  const ini = src.indexOf('const PACOTE_HTML');
+  const fim = src.indexOf('\n};', ini);
+  const resto = src.slice(0, ini) + src.slice(fim);
+  return resto.indexOf('SAP') < 0 && resto.indexOf('Oracle Discrete') < 0 &&
+    src.indexOf('veio do sistema') >= 0 && src.indexOf('came from the system') >= 0;
+})());
+
 ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
   src.indexOf('arrasteTravadoOrdem') >= 0);
 ok('busca ativa nao cancela mais o arraste',
