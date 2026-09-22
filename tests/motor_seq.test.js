@@ -29,6 +29,23 @@ function extractFn(name) {
   throw new Error('chave nao fechou: ' + name);
 }
 
+/** Metodo de objeto (`nome(args) { ... }`), como os de Cadastros. */
+function extractMetodo(nome) {
+  const start = src.indexOf('\n  ' + nome + '(');
+  if (start < 0) throw new Error('nao achei metodo ' + nome);
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start + 1, i + 1);
+    }
+  }
+  throw new Error('chave nao fechou: ' + nome);
+}
+
 const Util = {
   dois_(n) { return n < 10 ? '0' + n : String(n); },
   paraData(valor) {
@@ -757,6 +774,523 @@ ok('copia da ocupacao de pessoas nao vaza para o original', (function () {
   return srcOcup.OP1['2026-09-21'] === 40 && !srcOcup.OP2 && copia.OP1['2026-09-21'] === 99;
 })());
 ok('gravar planilha nao da flush por linha', /descarregar\(\) \{\s*this\._sujo = true;/.test(src));
+
+/**
+ * Prioridade sem arraste: planilha de mentira para apiPrioridadeLinha.
+ * Interessa o que fica gravado em DEMANDA_AJUSTES, nao o plano devolvido.
+ */
+function planilhaAjustesFalsa(linhas) {
+  const ctxPrio = {
+    Util: { paraNumero: Util.paraNumero ? Util.paraNumero : function (v) { return v === '' || v == null ? null : Number(v); } },
+    ABAS: { ajustes: 'DEMANDA_AJUSTES' },
+    ORIGEM: { manual: 'manual' },
+    Session: { getActiveUser() { return { getEmail() { return 'pcp@ads'; } }; } },
+    CachePainel: { invalidar() {} },
+    Repo: {
+      limparMemoria() {},
+      registrarAuditoria() {},
+      atualizarRegistro(aba, linha, registro) {
+        const alvo = linhas.filter(function (l) { return l._linha === linha; })[0];
+        Object.keys(registro).forEach(function (k) { alvo[k] = registro[k]; });
+      },
+      acrescentar(aba, registros) {
+        registros.forEach(function (r) {
+          linhas.push(Object.assign({ _linha: linhas.length + 2 }, r));
+        });
+      },
+    },
+    Cadastros: {
+      ajustes() {
+        const mapa = {};
+        linhas.forEach(function (l) {
+          mapa[l.chave] = {
+            chave: l.chave,
+            prioridadeManual: l.prioridade_manual === '' || l.prioridade_manual == null
+              ? null : Number(l.prioridade_manual),
+            observacao: l.observacao || '',
+            _linha: l._linha,
+          };
+        });
+        return mapa;
+      },
+    },
+    localizarPorCampo_(aba, campo, valor) {
+      return linhas.filter(function (l) { return l[campo] === valor; })[0] || null;
+    },
+    montarPlano() { return {}; },
+    exigirPcp_() { return { perfil: 'PCP' }; },
+  };
+  vm.createContext(ctxPrio);
+  vm.runInContext(
+    extractFn('gravarPrioridadeAjuste_') + '\n' +
+    extractFn('aplicarPrioridadeChave_') + '\n' +
+    extractFn('apiPrioridadeLinha'),
+    ctxPrio
+  );
+  return ctxPrio;
+}
+
+(function () {
+  const linhas = [
+    { chave: 'B|1', prioridade_manual: 10, observacao: '', _linha: 2 },
+    { chave: 'C|1', prioridade_manual: 20, observacao: 'campanha azul', _linha: 3 },
+  ];
+  const ctxPrio = planilhaAjustesFalsa(linhas);
+  ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'topo' });
+  const mapa = {};
+  linhas.forEach(function (l) { mapa[l.chave] = l; });
+  ok(
+    'subir para o topo poe a linha na frente e renumera o resto',
+    mapa['A|1'].prioridade_manual === 10 &&
+      mapa['B|1'].prioridade_manual === 20 &&
+      mapa['C|1'].prioridade_manual === 30
+  );
+  ok('renumerar nao apaga a observacao', mapa['C|1'].observacao === 'campanha azul');
+})();
+
+(function () {
+  const linhas = [{ chave: 'B|1', prioridade_manual: 10, observacao: '', _linha: 2 }];
+  const ctxPrio = planilhaAjustesFalsa(linhas);
+  ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'definir', prioridade: 5 });
+  ok(
+    'definir prioridade mexe so na linha pedida',
+    linhas.length === 2 && linhas[0].prioridade_manual === 10 && linhas[1].prioridade_manual === 5
+  );
+  ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'limpar' });
+  ok('limpar zera a prioridade da linha', linhas[1].prioridade_manual === '');
+  let erro = '';
+  try { ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'definir', prioridade: 0 }); }
+  catch (e) { erro = e.message; }
+  ok('prioridade zero e recusada', erro.indexOf('maior que zero') >= 0);
+})();
+
+/**
+ * Cruzamento maquina x tecnologia: o texto cru da coluna A nao pode cair na
+ * tecnologia mais parecida, e o cadastro da maquina manda no que ela roda.
+ */
+(function () {
+  const ctxTec = { normalizarCab_: null };
+  vm.createContext(ctxTec);
+  vm.runInContext(extractFn('normalizarCab_') + '\n' + extractFn('resolverTecnologia_'), ctxTec);
+  const techs = {};
+  [
+    ['TEC_PFL', 'PFL THERMAL'],
+    ['TEC_PFL_GOLDFAI', 'PFL THERMAL + Goldfai'],
+    ['TEC_PAPER_THERMAL', 'Paper_Thermal'],
+    ['TEC_RMT', 'Impressora RMT RFID E 24'],
+  ].forEach(function (par) {
+    techs[ctxTec.normalizarCab_(par[1])] = { id: par[0], planejavel: true };
+  });
+  const resolver = function (v) {
+    const tec = ctxTec.resolverTecnologia_(v, techs);
+    return tec ? tec.id : null;
+  };
+  ok('valor exato do backlog casa com a tecnologia', resolver('PFL THERMAL') === 'TEC_PFL');
+  ok('Paper_Thermal nao vira Goldfai', resolver('Paper_Thermal') === 'TEC_PAPER_THERMAL');
+  ok('PFL Thermal nao e engolido pelo Goldfai', resolver('PFL Thermal') === 'TEC_PFL');
+  ok('Goldfai continua casando com ele mesmo',
+    resolver('PFL THERMAL + Goldfai') === 'TEC_PFL_GOLDFAI');
+  ok('sufixo depois do nome ainda casa', resolver('Paper_Thermal 4x4') === 'TEC_PAPER_THERMAL');
+  ok('pedaco solto nao chuta tecnologia', resolver('thermal') === null);
+  ok('texto desconhecido devolve null', resolver('Etiqueta generica') === null);
+})();
+
+(function () {
+  const ctxMaq = {
+    FAMILIA_TECNOLOGIA: { TEC_PFL: ['S500'], TEC_PAPER_THERMAL: ['S500'] },
+    TECS: [
+      { id: 'TEC_PFL', grupo: 'SB_NON_RFID' },
+      { id: 'TEC_PAPER_THERMAL', grupo: 'SB_NON_RFID' },
+    ],
+  };
+  vm.createContext(ctxMaq);
+  vm.runInContext(
+    'var Cadastros = { tecnologias: function () { return TECS; }, ' +
+      extractMetodo('maquinaNaTecnologia_') + ' };',
+    ctxMaq
+  );
+  const cadastrada = { id: 'S500-10', nome: 'S500-10', grupo: 'SB_NON_RFID', tecnologias: ['TEC_PAPER_THERMAL'] };
+  const semLista = { id: 'S500-1', nome: 'S500-1', grupo: 'SB_NON_RFID', tecnologias: [] };
+  ok('cadastro da maquina manda no cruzamento',
+    ctxMaq.Cadastros.maquinaNaTecnologia_(cadastrada, 'TEC_PAPER_THERMAL') === true &&
+    ctxMaq.Cadastros.maquinaNaTecnologia_(cadastrada, 'TEC_PFL') === false);
+  ok('maquina sem lista cai no palpite da familia',
+    ctxMaq.Cadastros.maquinaNaTecnologia_(semLista, 'TEC_PFL') === true);
+})();
+
+ok('importacao zera o arrasto de tecnologia na troca de PV',
+  /arrasto\.ln = lnBruto \|\| '';[\s\S]{0,400}arrasto\.tec = '';\n\s+arrasto\.maq = '';/.test(src));
+ok('DEMANDA guarda o texto cru da tecnologia e da maquina',
+  /'tecnologia_bruta', 'codigo_maquina_bruto'/.test(src));
+ok('MAQUINAS tem a coluna tecnologias', /\n    'tecnologias',\n/.test(src));
+
+/**
+ * Plano congelado: a foto tem que sobreviver ao recalculo, entao o relatorio
+ * le a aba PLANO_CONGELADO e nao o plano de agora.
+ */
+(function () {
+  const congeladas = [
+    {
+      snapshot_id: 'CONG-A', gerado_em: '2026-09-21T08:00:00', gerado_por: 'pcp@ads',
+      escopo: 'SB_NON_RFID', grupo: 'SB_NON_RFID',
+      tecnologia_id: 'TEC_PAPER_THERMAL', tecnologia: 'Paper Thermal',
+      maquina_id: 'S500-10', maquina: 'S500-10', ordem_id: 'ORD-1', chave: 'PV1|10',
+      item_codigo: 'IT1', item_descricao: 'Etiqueta', cliente: 'DASS',
+      pecas: 1000, minutos: 120, inicio: '2026-09-21T06:20:00', fim: '2026-09-21T08:20:00',
+      tipo: 'PLANEJADA', travada: 'SIM', data_vencimento: '2026-09-30',
+    },
+    {
+      snapshot_id: 'CONG-A', gerado_em: '2026-09-21T08:00:00', gerado_por: 'pcp@ads',
+      escopo: 'SB_NON_RFID', grupo: 'SB_NON_RFID',
+      tecnologia_id: 'TEC_PAPER_THERMAL', tecnologia: 'Paper Thermal',
+      maquina_id: 'S500-1', maquina: 'S500-1', ordem_id: 'ORD-2', chave: 'PV2|10',
+      item_codigo: 'IT2', item_descricao: 'Etiqueta 2', cliente: 'NIKE',
+      pecas: 500, minutos: 60, inicio: '2026-09-28T06:20:00', fim: '2026-09-28T07:20:00',
+      tipo: 'LIBERADA', travada: 'NAO', data_vencimento: '2026-10-05',
+    },
+    {
+      snapshot_id: 'CONG-B', gerado_em: '2026-09-22T08:00:00', gerado_por: 'pcp@ads',
+      escopo: 'SB_RFID', grupo: 'SB_RFID',
+      tecnologia_id: 'TEC_ADTP', tecnologia: 'ADTP',
+      maquina_id: 'ADTP1-1', maquina: 'ADTP1-1', ordem_id: 'ORD-3', chave: 'PV3|10',
+      item_codigo: 'IT3', item_descricao: 'RFID', cliente: 'DASS',
+      pecas: 300, minutos: 30, inicio: '2026-09-23T06:20:00', fim: '2026-09-23T06:50:00',
+      tipo: 'PLANEJADA', travada: 'SIM', data_vencimento: '2026-10-01',
+    },
+  ];
+  const ctxCong = {
+    MS_DIA: 24 * 60 * 60 * 1000,
+    ABAS: { congelado: 'PLANO_CONGELADO' },
+    garantirAbaCadastro_() {},
+    Repo: { limparMemoria() {}, lerOpcional() { return congeladas; } },
+  };
+  vm.createContext(ctxCong);
+  vm.runInContext(
+    'var Util = {' + [
+      'paraData', 'inicioDoDia', 'somarDias', 'dois_', 'chaveDia',
+      'formatarISO', 'formatarHora', 'paraBooleano', 'paraNumero', 'semanaISO',
+    ].map(extractMetodo).join(',\n') + '};\n' +
+    extractFn('dataIsoCadastro_') + '\n' +
+    extractFn('lerPlanoCongelado_') + '\n' +
+    extractFn('apiRelatorioCongelado'),
+    ctxCong
+  );
+
+  const ultimo = ctxCong.apiRelatorioCongelado({});
+  ok('relatorio abre no congelamento mais recente', ultimo.snapshotId === 'CONG-B');
+  ok('so as ordens daquela foto entram',
+    ultimo.totais.ordens === 1 && ultimo.totais.pecas === 300);
+  ok('os congelamentos anteriores continuam listados',
+    ultimo.snapshots.length === 2 &&
+    ultimo.snapshots.map(function (s) { return s.id; }).indexOf('CONG-A') >= 0);
+
+  const antigo = ctxCong.apiRelatorioCongelado({ snapshotId: 'CONG-A' });
+  ok('da para voltar num congelamento anterior',
+    antigo.snapshotId === 'CONG-A' && antigo.micro.length === 2);
+  ok('macro soma pecas e horas por tecnologia e semana',
+    antigo.macro.length === 2 &&
+    antigo.macro[0].pecas === 1000 && antigo.macro[0].horas === 2 &&
+    antigo.macro[1].pecas === 500 && antigo.macro[1].semana !== antigo.macro[0].semana);
+  ok('micro sai ordenado por maquina', antigo.micro[0].maquina === 'S500-1');
+})();
+
+ok('aba PLANO_CONGELADO guarda a foto do congelamento',
+  src.indexOf("congelado: 'PLANO_CONGELADO'") >= 0 &&
+  /function gravarPlanoCongelado_/.test(src) &&
+  /gravarPlanoCongelado_\(escopo, payload, agora, congela\)/.test(src));
+ok('Excel do congelado sai com produzido e aderencia em branco',
+  /t\('colPecasProduzidas'\), t\('colDataProduzida'\), t\('colAderencia'\)/.test(src));
+
+/**
+ * Chatbot: a escrita ja confirmada nao pode voltar como cartao de
+ * confirmacao, senao a conversa entra no loop que o planejador viu.
+ */
+(function () {
+  let roteiro = [];
+  const ctxChat = {
+    encodeURIComponent: encodeURIComponent,
+    JSON: JSON,
+    CHAT_FERRAMENTAS_LEITURA: { consultarPainel: true },
+    CHAT_FERRAMENTAS_ESCRITA: { priorizarDemanda: true, pedirPrioridade: true },
+    CHAT_FERRAMENTAS_CS: { pedirPrioridade: true },
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    Cadastros: { config() { return { texto() { return 'gemini-2.5-flash'; } }; } },
+    instrucaoSistemaChat_() { return ''; },
+    resumoEstadoChat_() { return {}; },
+    executarLeituraChat_() { return { ok: true }; },
+    resumoEscritaChat_(nome, args) { return nome + ' ' + (args.chave || ''); },
+    chamarGemini_() { return roteiro.shift(); },
+  };
+  vm.createContext(ctxChat);
+  vm.runInContext(
+    extractFn('textoDasPartsChat_') + '\n' +
+    extractFn('argsChat_') + '\n' +
+    extractFn('perguntaOperacionalChat_') + '\n' +
+    extractFn('assinaturaEscritaChat_') + '\n' +
+    extractFn('montarConteudoChat_') + '\n' +
+    extractFn('ferramentaPermitidaChat_') + '\n' +
+    extractFn('rodarTurnoChat_'),
+    ctxChat
+  );
+
+  const chamada = {
+    candidates: [{ content: { parts: [{ functionCall: { name: 'priorizarDemanda', args: { chave: 'PV1|10', prioridade: 10 } } }] } }],
+  };
+  const fala = { candidates: [{ content: { parts: [{ text: 'A nova data e 12/11.' }] } }] };
+
+  roteiro = [chamada];
+  const primeira = ctxChat.rodarTurnoChat_([], 'pt-BR', 'k', { pergunta: 'priorize a PV1' });
+  ok('escrita nova pede confirmacao', primeira.tipo === 'confirmacao' && primeira.acao === 'priorizarDemanda');
+
+  roteiro = [chamada, fala];
+  const aplicadas = {};
+  aplicadas[ctxChat.assinaturaEscritaChat_('priorizarDemanda', { chave: 'PV1|10', prioridade: 10 })] = { ok: true };
+  const segunda = ctxChat.rodarTurnoChat_([], 'pt-BR', 'k', { aplicadas: aplicadas });
+  ok('escrita ja aplicada nao vira cartao de novo',
+    segunda.tipo === 'texto' && segunda.texto.indexOf('12/11') >= 0);
+
+  const so = ctxChat.montarConteudoChat_(
+    [{ papel: 'usuario', texto: 'priorize a PV1' }, { papel: 'modelo', texto: 'posso aplicar?' }], ''
+  );
+  ok('confirmacao nao inventa turno vazio do usuario',
+    so.length === 2 && so[1].role === 'model');
+})();
+
+ok('conversa e caderno de regras moram na planilha',
+  src.indexOf("chatMemoria: 'CHAT_MEMORIA'") >= 0 &&
+  src.indexOf("chatNotas: 'CHAT_NOTAS'") >= 0 &&
+  /function apiChatHistorico/.test(src));
+ok('chat tem ferramenta de anotar preferencia',
+  /anotarPreferencia: true/.test(src) && /name: 'anotarPreferencia'/.test(src));
+ok('as notas entram no prompt do sistema',
+  /textoNotasChat_\(\),/.test(src) && /function textoNotasChat_/.test(src));
+ok('confirmar continua o turno em vez de encerrar',
+  /rodarTurnoChat_\(conteudo, idioma, chave, \{\s*\n\s*aplicadas: aplicadas,/.test(src));
+
+/**
+ * Perfis de acesso. A trava que interessa e a do servidor: esconder botao
+ * nao protege um web app que executa com a conta dona da planilha.
+ */
+function contextoPerfil(acessos, padrao, email) {
+  const ctxPerfil = {
+    _perfilExecucao: null,
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    PERMISSOES_PERFIL: {
+      PCP: { planejar: true, aprovar: true, pedir: true, verAcessos: true },
+      OPERADOR: { planejar: false, aprovar: false, pedir: false, verAcessos: false },
+      CS: { planejar: false, aprovar: false, pedir: true, verAcessos: false },
+    },
+    identificarUsuario_() { return { email: email, nome: 'Fulano', iniciais: 'F' }; },
+    listarAcessos_() { return acessos; },
+    Cadastros: { config() { return { texto() { return padrao; } }; } },
+  };
+  vm.createContext(ctxPerfil);
+  vm.runInContext(
+    extractFn('normalizarPerfil_') + '\n' +
+    extractFn('permissoesPerfil_') + '\n' +
+    extractFn('perfilPadraoConfig_') + '\n' +
+    extractFn('perfilUsuario_') + '\n' +
+    extractFn('exigirPerfil_') + '\n' +
+    extractFn('exigirPcp_'),
+    ctxPerfil
+  );
+  return ctxPerfil;
+}
+
+(function () {
+  const vazio = contextoPerfil([], 'CS', 'christian@ads');
+  ok('instalacao sem lista de acessos deixa todo mundo planejar',
+    vazio.perfilUsuario_().perfil === 'PCP' && vazio.perfilUsuario_().portaAberta === true);
+
+  const time = [
+    { email: 'christian@ads', perfil: 'PCP', ativo: true },
+    { email: 'cs@ads', perfil: 'CS', ativo: true },
+    { email: 'maria@ads', perfil: 'OPERADOR', ativo: true },
+  ];
+  ok('quem esta na lista recebe o perfil dela',
+    contextoPerfil(time, 'CS', 'cs@ads').perfilUsuario_().perfil === 'CS');
+  ok('maiuscula no e-mail nao muda o perfil',
+    contextoPerfil(time, 'CS', 'CS@ads').perfilUsuario_().perfil === 'CS');
+  ok('com a lista cheia, quem nao esta nela cai no padrao',
+    contextoPerfil(time, 'CS', 'visita@ads').perfilUsuario_().perfil === 'CS');
+  ok('acesso desativado nao vale',
+    contextoPerfil(
+      [{ email: 'christian@ads', perfil: 'PCP', ativo: true },
+        { email: 'ex@ads', perfil: 'PCP', ativo: false }],
+      'OPERADOR', 'ex@ads'
+    ).perfilUsuario_().perfil === 'OPERADOR');
+
+  const comoCs = contextoPerfil(time, 'CS', 'cs@ads');
+  let barrado = '';
+  try { comoCs.exigirPcp_('mexer no plano'); } catch (e) { barrado = e.message; }
+  ok('CS nao passa na trava de escrita',
+    barrado.indexOf('CS') >= 0 && barrado.indexOf('mexer no plano') >= 0);
+  ok('PCP passa na trava',
+    contextoPerfil(time, 'CS', 'christian@ads').exigirPcp_('mexer no plano').perfil === 'PCP');
+})();
+
+(function () {
+  const ctxFer = {
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    CHAT_FERRAMENTAS_LEITURA: { consultarPainel: true, sugerirPlano: true },
+    CHAT_FERRAMENTAS_ESCRITA: { priorizarDemanda: true, pedirPrioridade: true },
+    CHAT_FERRAMENTAS_CS: { pedirPrioridade: true },
+  };
+  vm.createContext(ctxFer);
+  vm.runInContext(extractFn('ferramentaPermitidaChat_'), ctxFer);
+  const permitida = ctxFer.ferramentaPermitidaChat_;
+  ok('CS consulta, mas nao grava no plano',
+    permitida('consultarPainel', 'CS') && !permitida('priorizarDemanda', 'CS'));
+  ok('CS pede prioridade em vez de aplicar', permitida('pedirPrioridade', 'CS'));
+  ok('operador nao escreve nada', !permitida('pedirPrioridade', 'OPERADOR') &&
+    !permitida('priorizarDemanda', 'OPERADOR'));
+  ok('PCP continua com tudo',
+    permitida('priorizarDemanda', 'PCP') && permitida('sugerirPlano', 'PCP'));
+  ok('recalcular o plano inteiro fica so com o PCP', !permitida('sugerirPlano', 'CS'));
+})();
+
+/**
+ * A fila do Customer Service: o pedido nao mexe no plano, e aprovar aplica a
+ * prioridade de verdade e devolve o recado no chat de quem pediu.
+ */
+(function () {
+  const solicitacoes = [];
+  const ajustes = [];
+  const memoria = [];
+  let perfil = 'CS';
+
+  const ctxSol = {
+    ABAS: { solicitacoes: 'SOLICITACOES', ajustes: 'DEMANDA_AJUSTES' },
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    STATUS_SOLICITACAO: { aberta: 'ABERTA', aprovada: 'APROVADA', recusada: 'RECUSADA' },
+    TIPO_SOLICITACAO: { prioridade: 'PRIORIDADE', recado: 'RECADO' },
+    ORIGEM: { manual: 'MANUAL', chatbot: 'CHATBOT' },
+    CachePainel: { invalidar() {} },
+    garantirAbaCadastro_() {},
+    gravarMemoriaChat_(papel, texto, acao, email) {
+      memoria.push({ papel: papel, texto: texto, acao: acao, email: email });
+    },
+    perfilUsuario_() {
+      return {
+        email: perfil === 'PCP' ? 'christian@ads' : 'cs@ads',
+        perfil: perfil,
+        permissoes: { aprovar: perfil === 'PCP', pedir: true },
+      };
+    },
+    Util: {
+      gerarId(p) { return p + '-' + (solicitacoes.length + 1); },
+      paraData(v) { return v instanceof Date ? v : null; },
+      formatarISO(d) { return d.toISOString().slice(0, 16); },
+      paraNumero(v) { return v === '' || v == null ? null : Number(v); },
+    },
+    Cadastros: {
+      demandas() { return [{ chave: 'SO429146|10', cliente: 'DASS', itemCodigo: 'IT1', dataVencimento: '2026-10-02' }]; },
+      ajustes() {
+        const mapa = {};
+        ajustes.forEach(function (a) { mapa[a.chave] = a; });
+        return mapa;
+      },
+    },
+    localizarPorCampo_(aba, campo, valor) {
+      return ajustes.filter(function (a) { return a[campo] === valor; })[0] || null;
+    },
+    Repo: {
+      limparMemoria() {},
+      registrarAuditoria() {},
+      lerOpcional() { return solicitacoes; },
+      acrescentar(aba, regs) {
+        regs.forEach(function (r) {
+          if (aba === 'SOLICITACOES') solicitacoes.push(Object.assign({ _linha: solicitacoes.length + 2 }, r));
+          else ajustes.push(Object.assign({ _linha: ajustes.length + 2 }, r));
+        });
+      },
+      atualizarRegistro(aba, linha, registro) {
+        const alvo = ajustes.filter(function (a) { return a._linha === linha; })[0];
+        if (alvo) Object.keys(registro).forEach(function (k) { alvo[k] = registro[k]; });
+      },
+      atualizarCelulas(aba, linha, mapa) {
+        const alvo = solicitacoes.filter(function (s) { return s._linha === linha; })[0];
+        if (alvo) Object.keys(mapa).forEach(function (k) { alvo[k] = mapa[k]; });
+      },
+    },
+  };
+  vm.createContext(ctxSol);
+  vm.runInContext(
+    extractFn('exigirPerfil_') + '\n' +
+    extractFn('exigirPcp_') + '\n' +
+    extractFn('dataHoraSolicitacao_') + '\n' +
+    extractFn('listarSolicitacoes_') + '\n' +
+    extractFn('pacoteSolicitacoes_') + '\n' +
+    extractFn('normalizarChaveSolicitacao_') + '\n' +
+    extractFn('acharDemandaSolicitacao_') + '\n' +
+    extractFn('gravarPrioridadeAjuste_') + '\n' +
+    extractFn('aplicarPrioridadeChave_') + '\n' +
+    extractFn('textoRespostaSolicitacao_') + '\n' +
+    extractFn('apiSolicitarPrioridade') + '\n' +
+    extractFn('apiResponderSolicitacao'),
+    ctxSol
+  );
+
+  ok('SO429146 10 e SO429146|10 sao a mesma linha',
+    ctxSol.normalizarChaveSolicitacao_('SO429146 10') === 'SO429146|10' &&
+    ctxSol.normalizarChaveSolicitacao_('so429146-10') === 'SO429146|10');
+
+  const pedido = ctxSol.apiSolicitarPrioridade({ chave: 'SO429146 10', texto: 'cliente embarca dia 5' });
+  ok('pedido do CS entra na fila sem tocar no plano',
+    pedido.status === 'ABERTA' && ajustes.length === 0 && solicitacoes.length === 1);
+  ok('pedido volta com o cliente da linha', pedido.cliente === 'DASS');
+
+  let semLinha = '';
+  try { ctxSol.apiSolicitarPrioridade({ chave: 'SO999999|1', texto: 'urgente' }); }
+  catch (e) { semLinha = e.message; }
+  ok('pedido de PV que nao existe no backlog e recusado na hora',
+    semLinha.indexOf('SO999999|1') >= 0);
+
+  let semPermissao = '';
+  try { ctxSol.apiResponderSolicitacao({ id: pedido.id, decisao: 'aprovar' }); }
+  catch (e) { semPermissao = e.message; }
+  ok('CS nao aprova o proprio pedido', semPermissao.indexOf('CS') >= 0);
+
+  perfil = 'PCP';
+  const depois = ctxSol.apiResponderSolicitacao({ id: pedido.id, decisao: 'aprovar' });
+  ok('aprovar poe a linha no topo da fila',
+    ajustes.length === 1 && ajustes[0].chave === 'SO429146|10' && ajustes[0].prioridade_manual === 10);
+  ok('a resposta volta para o chat de quem pediu',
+    memoria.length === 1 && memoria[0].email === 'cs@ads' &&
+    memoria[0].texto.indexOf('SO429146|10') >= 0 &&
+    memoria[0].texto.indexOf('aprovado') >= 0);
+  ok('o pedido sai da fila depois de respondido', depois.abertas === 0);
+
+  let jaRespondido = '';
+  try { ctxSol.apiResponderSolicitacao({ id: pedido.id, decisao: 'recusar' }); }
+  catch (e) { jaRespondido = e.message; }
+  ok('nao da para responder duas vezes o mesmo pedido',
+    jaRespondido.indexOf('ja foi respondido') >= 0);
+
+  perfil = 'CS';
+  const doCs = ctxSol.pacoteSolicitacoes_();
+  ok('o CS ve o proprio pedido e a resposta',
+    doCs.lista.length === 1 && doCs.lista[0].status === 'APROVADA' && !doCs.podeAprovar);
+})();
+
+ok('escrita no plano so passa com perfil PCP', (function () {
+  const escritas = src.match(/\nfunction api(Salvar|Excluir|Aplicar|Liberar|Congelar|Encerrar|Reabrir|Importar|Mover|Travar|Reordenar|Prioridade)[A-Za-z]*\([^)]*\) \{\n([^\n]*)/g) || [];
+  if (escritas.length < 30) return false;
+  return escritas.every(function (trecho) { return /exigirP(cp|erfil)_/.test(trecho); });
+})());
+ok('abas ACESSOS e SOLICITACOES existem no esquema',
+  src.indexOf("acessos: 'ACESSOS'") >= 0 && src.indexOf("solicitacoes: 'SOLICITACOES'") >= 0);
+ok('a tela le a permissao que o servidor mandou',
+  src.indexOf('function vistasVisiveis') >= 0 && /permissoes: eu\.permissoes/.test(src));
+ok('o gatilho de backlog nao passa pela trava de perfil',
+  /function importarBacklog\(\) \{\n  const resumo = importarBacklogAgora_\(\);/.test(src));
+
+ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
+  src.indexOf('arrasteTravadoOrdem') >= 0);
+ok('busca ativa nao cancela mais o arraste',
+  src.indexOf("if (row.style.display === 'none') oculto = true;") < 0);
+ok('drawer da linha prioriza sem arrastar',
+  src.indexOf('drawer-ot-topo') >= 0 && src.indexOf('apiPrioridadeLinha(Object.assign') >= 0);
 
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
