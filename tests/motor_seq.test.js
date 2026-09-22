@@ -818,10 +818,13 @@ function planilhaAjustesFalsa(linhas) {
       return linhas.filter(function (l) { return l[campo] === valor; })[0] || null;
     },
     montarPlano() { return {}; },
+    exigirPcp_() { return { perfil: 'PCP' }; },
   };
   vm.createContext(ctxPrio);
   vm.runInContext(
-    extractFn('gravarPrioridadeAjuste_') + '\n' + extractFn('apiPrioridadeLinha'),
+    extractFn('gravarPrioridadeAjuste_') + '\n' +
+    extractFn('aplicarPrioridadeChave_') + '\n' +
+    extractFn('apiPrioridadeLinha'),
     ctxPrio
   );
   return ctxPrio;
@@ -1008,7 +1011,9 @@ ok('Excel do congelado sai com produzido e aderencia em branco',
     encodeURIComponent: encodeURIComponent,
     JSON: JSON,
     CHAT_FERRAMENTAS_LEITURA: { consultarPainel: true },
-    CHAT_FERRAMENTAS_ESCRITA: { priorizarDemanda: true },
+    CHAT_FERRAMENTAS_ESCRITA: { priorizarDemanda: true, pedirPrioridade: true },
+    CHAT_FERRAMENTAS_CS: { pedirPrioridade: true },
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
     Cadastros: { config() { return { texto() { return 'gemini-2.5-flash'; } }; } },
     instrucaoSistemaChat_() { return ''; },
     resumoEstadoChat_() { return {}; },
@@ -1023,6 +1028,7 @@ ok('Excel do congelado sai com produzido e aderencia em branco',
     extractFn('perguntaOperacionalChat_') + '\n' +
     extractFn('assinaturaEscritaChat_') + '\n' +
     extractFn('montarConteudoChat_') + '\n' +
+    extractFn('ferramentaPermitidaChat_') + '\n' +
     extractFn('rodarTurnoChat_'),
     ctxChat
   );
@@ -1060,6 +1066,224 @@ ok('as notas entram no prompt do sistema',
   /textoNotasChat_\(\),/.test(src) && /function textoNotasChat_/.test(src));
 ok('confirmar continua o turno em vez de encerrar',
   /rodarTurnoChat_\(conteudo, idioma, chave, \{\s*\n\s*aplicadas: aplicadas,/.test(src));
+
+/**
+ * Perfis de acesso. A trava que interessa e a do servidor: esconder botao
+ * nao protege um web app que executa com a conta dona da planilha.
+ */
+function contextoPerfil(acessos, padrao, email) {
+  const ctxPerfil = {
+    _perfilExecucao: null,
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    PERMISSOES_PERFIL: {
+      PCP: { planejar: true, aprovar: true, pedir: true, verAcessos: true },
+      OPERADOR: { planejar: false, aprovar: false, pedir: false, verAcessos: false },
+      CS: { planejar: false, aprovar: false, pedir: true, verAcessos: false },
+    },
+    identificarUsuario_() { return { email: email, nome: 'Fulano', iniciais: 'F' }; },
+    listarAcessos_() { return acessos; },
+    Cadastros: { config() { return { texto() { return padrao; } }; } },
+  };
+  vm.createContext(ctxPerfil);
+  vm.runInContext(
+    extractFn('normalizarPerfil_') + '\n' +
+    extractFn('permissoesPerfil_') + '\n' +
+    extractFn('perfilPadraoConfig_') + '\n' +
+    extractFn('perfilUsuario_') + '\n' +
+    extractFn('exigirPerfil_') + '\n' +
+    extractFn('exigirPcp_'),
+    ctxPerfil
+  );
+  return ctxPerfil;
+}
+
+(function () {
+  const vazio = contextoPerfil([], 'CS', 'christian@ads');
+  ok('instalacao sem lista de acessos deixa todo mundo planejar',
+    vazio.perfilUsuario_().perfil === 'PCP' && vazio.perfilUsuario_().portaAberta === true);
+
+  const time = [
+    { email: 'christian@ads', perfil: 'PCP', ativo: true },
+    { email: 'cs@ads', perfil: 'CS', ativo: true },
+    { email: 'maria@ads', perfil: 'OPERADOR', ativo: true },
+  ];
+  ok('quem esta na lista recebe o perfil dela',
+    contextoPerfil(time, 'CS', 'cs@ads').perfilUsuario_().perfil === 'CS');
+  ok('maiuscula no e-mail nao muda o perfil',
+    contextoPerfil(time, 'CS', 'CS@ads').perfilUsuario_().perfil === 'CS');
+  ok('com a lista cheia, quem nao esta nela cai no padrao',
+    contextoPerfil(time, 'CS', 'visita@ads').perfilUsuario_().perfil === 'CS');
+  ok('acesso desativado nao vale',
+    contextoPerfil(
+      [{ email: 'christian@ads', perfil: 'PCP', ativo: true },
+        { email: 'ex@ads', perfil: 'PCP', ativo: false }],
+      'OPERADOR', 'ex@ads'
+    ).perfilUsuario_().perfil === 'OPERADOR');
+
+  const comoCs = contextoPerfil(time, 'CS', 'cs@ads');
+  let barrado = '';
+  try { comoCs.exigirPcp_('mexer no plano'); } catch (e) { barrado = e.message; }
+  ok('CS nao passa na trava de escrita',
+    barrado.indexOf('CS') >= 0 && barrado.indexOf('mexer no plano') >= 0);
+  ok('PCP passa na trava',
+    contextoPerfil(time, 'CS', 'christian@ads').exigirPcp_('mexer no plano').perfil === 'PCP');
+})();
+
+(function () {
+  const ctxFer = {
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    CHAT_FERRAMENTAS_LEITURA: { consultarPainel: true, sugerirPlano: true },
+    CHAT_FERRAMENTAS_ESCRITA: { priorizarDemanda: true, pedirPrioridade: true },
+    CHAT_FERRAMENTAS_CS: { pedirPrioridade: true },
+  };
+  vm.createContext(ctxFer);
+  vm.runInContext(extractFn('ferramentaPermitidaChat_'), ctxFer);
+  const permitida = ctxFer.ferramentaPermitidaChat_;
+  ok('CS consulta, mas nao grava no plano',
+    permitida('consultarPainel', 'CS') && !permitida('priorizarDemanda', 'CS'));
+  ok('CS pede prioridade em vez de aplicar', permitida('pedirPrioridade', 'CS'));
+  ok('operador nao escreve nada', !permitida('pedirPrioridade', 'OPERADOR') &&
+    !permitida('priorizarDemanda', 'OPERADOR'));
+  ok('PCP continua com tudo',
+    permitida('priorizarDemanda', 'PCP') && permitida('sugerirPlano', 'PCP'));
+  ok('recalcular o plano inteiro fica so com o PCP', !permitida('sugerirPlano', 'CS'));
+})();
+
+/**
+ * A fila do Customer Service: o pedido nao mexe no plano, e aprovar aplica a
+ * prioridade de verdade e devolve o recado no chat de quem pediu.
+ */
+(function () {
+  const solicitacoes = [];
+  const ajustes = [];
+  const memoria = [];
+  let perfil = 'CS';
+
+  const ctxSol = {
+    ABAS: { solicitacoes: 'SOLICITACOES', ajustes: 'DEMANDA_AJUSTES' },
+    PERFIL: { pcp: 'PCP', cs: 'CS', operador: 'OPERADOR' },
+    STATUS_SOLICITACAO: { aberta: 'ABERTA', aprovada: 'APROVADA', recusada: 'RECUSADA' },
+    TIPO_SOLICITACAO: { prioridade: 'PRIORIDADE', recado: 'RECADO' },
+    ORIGEM: { manual: 'MANUAL', chatbot: 'CHATBOT' },
+    CachePainel: { invalidar() {} },
+    garantirAbaCadastro_() {},
+    gravarMemoriaChat_(papel, texto, acao, email) {
+      memoria.push({ papel: papel, texto: texto, acao: acao, email: email });
+    },
+    perfilUsuario_() {
+      return {
+        email: perfil === 'PCP' ? 'christian@ads' : 'cs@ads',
+        perfil: perfil,
+        permissoes: { aprovar: perfil === 'PCP', pedir: true },
+      };
+    },
+    Util: {
+      gerarId(p) { return p + '-' + (solicitacoes.length + 1); },
+      paraData(v) { return v instanceof Date ? v : null; },
+      formatarISO(d) { return d.toISOString().slice(0, 16); },
+      paraNumero(v) { return v === '' || v == null ? null : Number(v); },
+    },
+    Cadastros: {
+      demandas() { return [{ chave: 'SO429146|10', cliente: 'DASS', itemCodigo: 'IT1', dataVencimento: '2026-10-02' }]; },
+      ajustes() {
+        const mapa = {};
+        ajustes.forEach(function (a) { mapa[a.chave] = a; });
+        return mapa;
+      },
+    },
+    localizarPorCampo_(aba, campo, valor) {
+      return ajustes.filter(function (a) { return a[campo] === valor; })[0] || null;
+    },
+    Repo: {
+      limparMemoria() {},
+      registrarAuditoria() {},
+      lerOpcional() { return solicitacoes; },
+      acrescentar(aba, regs) {
+        regs.forEach(function (r) {
+          if (aba === 'SOLICITACOES') solicitacoes.push(Object.assign({ _linha: solicitacoes.length + 2 }, r));
+          else ajustes.push(Object.assign({ _linha: ajustes.length + 2 }, r));
+        });
+      },
+      atualizarRegistro(aba, linha, registro) {
+        const alvo = ajustes.filter(function (a) { return a._linha === linha; })[0];
+        if (alvo) Object.keys(registro).forEach(function (k) { alvo[k] = registro[k]; });
+      },
+      atualizarCelulas(aba, linha, mapa) {
+        const alvo = solicitacoes.filter(function (s) { return s._linha === linha; })[0];
+        if (alvo) Object.keys(mapa).forEach(function (k) { alvo[k] = mapa[k]; });
+      },
+    },
+  };
+  vm.createContext(ctxSol);
+  vm.runInContext(
+    extractFn('exigirPerfil_') + '\n' +
+    extractFn('exigirPcp_') + '\n' +
+    extractFn('dataHoraSolicitacao_') + '\n' +
+    extractFn('listarSolicitacoes_') + '\n' +
+    extractFn('pacoteSolicitacoes_') + '\n' +
+    extractFn('normalizarChaveSolicitacao_') + '\n' +
+    extractFn('acharDemandaSolicitacao_') + '\n' +
+    extractFn('gravarPrioridadeAjuste_') + '\n' +
+    extractFn('aplicarPrioridadeChave_') + '\n' +
+    extractFn('textoRespostaSolicitacao_') + '\n' +
+    extractFn('apiSolicitarPrioridade') + '\n' +
+    extractFn('apiResponderSolicitacao'),
+    ctxSol
+  );
+
+  ok('SO429146 10 e SO429146|10 sao a mesma linha',
+    ctxSol.normalizarChaveSolicitacao_('SO429146 10') === 'SO429146|10' &&
+    ctxSol.normalizarChaveSolicitacao_('so429146-10') === 'SO429146|10');
+
+  const pedido = ctxSol.apiSolicitarPrioridade({ chave: 'SO429146 10', texto: 'cliente embarca dia 5' });
+  ok('pedido do CS entra na fila sem tocar no plano',
+    pedido.status === 'ABERTA' && ajustes.length === 0 && solicitacoes.length === 1);
+  ok('pedido volta com o cliente da linha', pedido.cliente === 'DASS');
+
+  let semLinha = '';
+  try { ctxSol.apiSolicitarPrioridade({ chave: 'SO999999|1', texto: 'urgente' }); }
+  catch (e) { semLinha = e.message; }
+  ok('pedido de PV que nao existe no backlog e recusado na hora',
+    semLinha.indexOf('SO999999|1') >= 0);
+
+  let semPermissao = '';
+  try { ctxSol.apiResponderSolicitacao({ id: pedido.id, decisao: 'aprovar' }); }
+  catch (e) { semPermissao = e.message; }
+  ok('CS nao aprova o proprio pedido', semPermissao.indexOf('CS') >= 0);
+
+  perfil = 'PCP';
+  const depois = ctxSol.apiResponderSolicitacao({ id: pedido.id, decisao: 'aprovar' });
+  ok('aprovar poe a linha no topo da fila',
+    ajustes.length === 1 && ajustes[0].chave === 'SO429146|10' && ajustes[0].prioridade_manual === 10);
+  ok('a resposta volta para o chat de quem pediu',
+    memoria.length === 1 && memoria[0].email === 'cs@ads' &&
+    memoria[0].texto.indexOf('SO429146|10') >= 0 &&
+    memoria[0].texto.indexOf('aprovado') >= 0);
+  ok('o pedido sai da fila depois de respondido', depois.abertas === 0);
+
+  let jaRespondido = '';
+  try { ctxSol.apiResponderSolicitacao({ id: pedido.id, decisao: 'recusar' }); }
+  catch (e) { jaRespondido = e.message; }
+  ok('nao da para responder duas vezes o mesmo pedido',
+    jaRespondido.indexOf('ja foi respondido') >= 0);
+
+  perfil = 'CS';
+  const doCs = ctxSol.pacoteSolicitacoes_();
+  ok('o CS ve o proprio pedido e a resposta',
+    doCs.lista.length === 1 && doCs.lista[0].status === 'APROVADA' && !doCs.podeAprovar);
+})();
+
+ok('escrita no plano so passa com perfil PCP', (function () {
+  const escritas = src.match(/\nfunction api(Salvar|Excluir|Aplicar|Liberar|Congelar|Encerrar|Reabrir|Importar|Mover|Travar|Reordenar|Prioridade)[A-Za-z]*\([^)]*\) \{\n([^\n]*)/g) || [];
+  if (escritas.length < 30) return false;
+  return escritas.every(function (trecho) { return /exigirP(cp|erfil)_/.test(trecho); });
+})());
+ok('abas ACESSOS e SOLICITACOES existem no esquema',
+  src.indexOf("acessos: 'ACESSOS'") >= 0 && src.indexOf("solicitacoes: 'SOLICITACOES'") >= 0);
+ok('a tela le a permissao que o servidor mandou',
+  src.indexOf('function vistasVisiveis') >= 0 && /permissoes: eu\.permissoes/.test(src));
+ok('o gatilho de backlog nao passa pela trava de perfil',
+  /function importarBacklog\(\) \{\n  const resumo = importarBacklogAgora_\(\);/.test(src));
 
 ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
   src.indexOf('arrasteTravadoOrdem') >= 0);
