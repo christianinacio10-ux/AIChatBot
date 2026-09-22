@@ -758,6 +758,99 @@ ok('copia da ocupacao de pessoas nao vaza para o original', (function () {
 })());
 ok('gravar planilha nao da flush por linha', /descarregar\(\) \{\s*this\._sujo = true;/.test(src));
 
+/**
+ * Prioridade sem arraste: planilha de mentira para apiPrioridadeLinha.
+ * Interessa o que fica gravado em DEMANDA_AJUSTES, nao o plano devolvido.
+ */
+function planilhaAjustesFalsa(linhas) {
+  const ctxPrio = {
+    Util: { paraNumero: Util.paraNumero ? Util.paraNumero : function (v) { return v === '' || v == null ? null : Number(v); } },
+    ABAS: { ajustes: 'DEMANDA_AJUSTES' },
+    ORIGEM: { manual: 'manual' },
+    Session: { getActiveUser() { return { getEmail() { return 'pcp@ads'; } }; } },
+    CachePainel: { invalidar() {} },
+    Repo: {
+      limparMemoria() {},
+      registrarAuditoria() {},
+      atualizarRegistro(aba, linha, registro) {
+        const alvo = linhas.filter(function (l) { return l._linha === linha; })[0];
+        Object.keys(registro).forEach(function (k) { alvo[k] = registro[k]; });
+      },
+      acrescentar(aba, registros) {
+        registros.forEach(function (r) {
+          linhas.push(Object.assign({ _linha: linhas.length + 2 }, r));
+        });
+      },
+    },
+    Cadastros: {
+      ajustes() {
+        const mapa = {};
+        linhas.forEach(function (l) {
+          mapa[l.chave] = {
+            chave: l.chave,
+            prioridadeManual: l.prioridade_manual === '' || l.prioridade_manual == null
+              ? null : Number(l.prioridade_manual),
+            observacao: l.observacao || '',
+            _linha: l._linha,
+          };
+        });
+        return mapa;
+      },
+    },
+    localizarPorCampo_(aba, campo, valor) {
+      return linhas.filter(function (l) { return l[campo] === valor; })[0] || null;
+    },
+    montarPlano() { return {}; },
+  };
+  vm.createContext(ctxPrio);
+  vm.runInContext(
+    extractFn('gravarPrioridadeAjuste_') + '\n' + extractFn('apiPrioridadeLinha'),
+    ctxPrio
+  );
+  return ctxPrio;
+}
+
+(function () {
+  const linhas = [
+    { chave: 'B|1', prioridade_manual: 10, observacao: '', _linha: 2 },
+    { chave: 'C|1', prioridade_manual: 20, observacao: 'campanha azul', _linha: 3 },
+  ];
+  const ctxPrio = planilhaAjustesFalsa(linhas);
+  ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'topo' });
+  const mapa = {};
+  linhas.forEach(function (l) { mapa[l.chave] = l; });
+  ok(
+    'subir para o topo poe a linha na frente e renumera o resto',
+    mapa['A|1'].prioridade_manual === 10 &&
+      mapa['B|1'].prioridade_manual === 20 &&
+      mapa['C|1'].prioridade_manual === 30
+  );
+  ok('renumerar nao apaga a observacao', mapa['C|1'].observacao === 'campanha azul');
+})();
+
+(function () {
+  const linhas = [{ chave: 'B|1', prioridade_manual: 10, observacao: '', _linha: 2 }];
+  const ctxPrio = planilhaAjustesFalsa(linhas);
+  ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'definir', prioridade: 5 });
+  ok(
+    'definir prioridade mexe so na linha pedida',
+    linhas.length === 2 && linhas[0].prioridade_manual === 10 && linhas[1].prioridade_manual === 5
+  );
+  ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'limpar' });
+  ok('limpar zera a prioridade da linha', linhas[1].prioridade_manual === '');
+  let erro = '';
+  try { ctxPrio.apiPrioridadeLinha({ chave: 'A|1', acao: 'definir', prioridade: 0 }); }
+  catch (e) { erro = e.message; }
+  ok('prioridade zero e recusada', erro.indexOf('maior que zero') >= 0);
+})();
+
+ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
+  src.indexOf('arrasteTravadoOrdem') >= 0);
+ok('busca ativa nao cancela mais o arraste',
+  src.indexOf("if (row.style.display === 'none') oculto = true;") < 0);
+ok('drawer da linha prioriza sem arrastar',
+  src.indexOf('drawer-ot-topo') >= 0 && src.indexOf('apiPrioridadeLinha(Object.assign') >= 0);
+
 if (falhas) {
   console.error('\n' + falhas + ' teste(s) falharam');
   process.exit(1);
