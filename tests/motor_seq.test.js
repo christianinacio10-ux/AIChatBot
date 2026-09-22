@@ -1282,6 +1282,10 @@ ok('abas ACESSOS e SOLICITACOES existem no esquema',
   src.indexOf("acessos: 'ACESSOS'") >= 0 && src.indexOf("solicitacoes: 'SOLICITACOES'") >= 0);
 ok('a tela le a permissao que o servidor mandou',
   src.indexOf('function vistasVisiveis') >= 0 && /permissoes: eu\.permissoes/.test(src));
+ok('pendencias ficam so com quem aprova',
+  src.indexOf('function vePendencias()') >= 0 &&
+  src.indexOf("return pode('aprovar')") >= 0 &&
+  src.indexOf('sem-pendencias') >= 0);
 ok('o gatilho de backlog nao passa pela trava de perfil',
   /function importarBacklog\(\) \{\n  const resumo = importarBacklogAgora_\(\);/.test(src));
 
