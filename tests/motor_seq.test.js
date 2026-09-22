@@ -29,6 +29,23 @@ function extractFn(name) {
   throw new Error('chave nao fechou: ' + name);
 }
 
+/** Metodo de objeto (`nome(args) { ... }`), como os de Cadastros. */
+function extractMetodo(nome) {
+  const start = src.indexOf('\n  ' + nome + '(');
+  if (start < 0) throw new Error('nao achei metodo ' + nome);
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start + 1, i + 1);
+    }
+  }
+  throw new Error('chave nao fechou: ' + nome);
+}
+
 const Util = {
   dois_(n) { return n < 10 ? '0' + n : String(n); },
   paraData(valor) {
@@ -843,6 +860,66 @@ function planilhaAjustesFalsa(linhas) {
   catch (e) { erro = e.message; }
   ok('prioridade zero e recusada', erro.indexOf('maior que zero') >= 0);
 })();
+
+/**
+ * Cruzamento maquina x tecnologia: o texto cru da coluna A nao pode cair na
+ * tecnologia mais parecida, e o cadastro da maquina manda no que ela roda.
+ */
+(function () {
+  const ctxTec = { normalizarCab_: null };
+  vm.createContext(ctxTec);
+  vm.runInContext(extractFn('normalizarCab_') + '\n' + extractFn('resolverTecnologia_'), ctxTec);
+  const techs = {};
+  [
+    ['TEC_PFL', 'PFL THERMAL'],
+    ['TEC_PFL_GOLDFAI', 'PFL THERMAL + Goldfai'],
+    ['TEC_PAPER_THERMAL', 'Paper_Thermal'],
+    ['TEC_RMT', 'Impressora RMT RFID E 24'],
+  ].forEach(function (par) {
+    techs[ctxTec.normalizarCab_(par[1])] = { id: par[0], planejavel: true };
+  });
+  const resolver = function (v) {
+    const tec = ctxTec.resolverTecnologia_(v, techs);
+    return tec ? tec.id : null;
+  };
+  ok('valor exato do backlog casa com a tecnologia', resolver('PFL THERMAL') === 'TEC_PFL');
+  ok('Paper_Thermal nao vira Goldfai', resolver('Paper_Thermal') === 'TEC_PAPER_THERMAL');
+  ok('PFL Thermal nao e engolido pelo Goldfai', resolver('PFL Thermal') === 'TEC_PFL');
+  ok('Goldfai continua casando com ele mesmo',
+    resolver('PFL THERMAL + Goldfai') === 'TEC_PFL_GOLDFAI');
+  ok('sufixo depois do nome ainda casa', resolver('Paper_Thermal 4x4') === 'TEC_PAPER_THERMAL');
+  ok('pedaco solto nao chuta tecnologia', resolver('thermal') === null);
+  ok('texto desconhecido devolve null', resolver('Etiqueta generica') === null);
+})();
+
+(function () {
+  const ctxMaq = {
+    FAMILIA_TECNOLOGIA: { TEC_PFL: ['S500'], TEC_PAPER_THERMAL: ['S500'] },
+    TECS: [
+      { id: 'TEC_PFL', grupo: 'SB_NON_RFID' },
+      { id: 'TEC_PAPER_THERMAL', grupo: 'SB_NON_RFID' },
+    ],
+  };
+  vm.createContext(ctxMaq);
+  vm.runInContext(
+    'var Cadastros = { tecnologias: function () { return TECS; }, ' +
+      extractMetodo('maquinaNaTecnologia_') + ' };',
+    ctxMaq
+  );
+  const cadastrada = { id: 'S500-10', nome: 'S500-10', grupo: 'SB_NON_RFID', tecnologias: ['TEC_PAPER_THERMAL'] };
+  const semLista = { id: 'S500-1', nome: 'S500-1', grupo: 'SB_NON_RFID', tecnologias: [] };
+  ok('cadastro da maquina manda no cruzamento',
+    ctxMaq.Cadastros.maquinaNaTecnologia_(cadastrada, 'TEC_PAPER_THERMAL') === true &&
+    ctxMaq.Cadastros.maquinaNaTecnologia_(cadastrada, 'TEC_PFL') === false);
+  ok('maquina sem lista cai no palpite da familia',
+    ctxMaq.Cadastros.maquinaNaTecnologia_(semLista, 'TEC_PFL') === true);
+})();
+
+ok('importacao zera o arrasto de tecnologia na troca de PV',
+  /arrasto\.ln = lnBruto \|\| '';[\s\S]{0,400}arrasto\.tec = '';\n\s+arrasto\.maq = '';/.test(src));
+ok('DEMANDA guarda o texto cru da tecnologia e da maquina',
+  /'tecnologia_bruta', 'codigo_maquina_bruto'/.test(src));
+ok('MAQUINAS tem a coluna tecnologias', /\n    'tecnologias',\n/.test(src));
 
 ok('arraste travado diz o motivo', src.indexOf('function motivoArrasteLista') >= 0 &&
   src.indexOf('arrasteTravadoOrdem') >= 0);
